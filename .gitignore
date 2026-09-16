@@ -219,3 +219,6 @@ __marimo__/
 
 # Repo-specific
 .DS_Store
+
+# Fetched benchmark data (re-downloaded via scripts/fetch_data.sh)
+data/
