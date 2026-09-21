@@ -18,66 +18,45 @@ import argparse
 import json
 from pathlib import Path
 
+from hf_model import load_causal_lm, unload
 
-def load_model(model_path: str, adapter_path: str | None = None, use_4bit: bool = True):
-    """Loads a base HF causal-LM checkpoint, optionally with a PEFT adapter
-    attached on top. Returns (model, tokenizer)."""
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    quantization_config = None
-    if use_4bit:
-        from transformers import BitsAndBytesConfig
-
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    # Left-pad for batched causal-LM generation -- right padding (the HF default)
-    # puts pad tokens before the real content ends, so slicing off the prompt by
-    # a single input_len below would decode garbage for every shorter sequence.
-    tokenizer.padding_side = "left"
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        quantization_config=quantization_config,
-        device_map="auto",
-    )
-
-    if adapter_path:
-        from peft import PeftModel
-
-        model = PeftModel.from_pretrained(model, adapter_path)
-
-    model.eval()
-    return model, tokenizer
+# Re-exported for backwards compatibility -- callers/scripts that imported
+# load_model from this module directly still work.
+load_model = load_causal_lm
 
 
 def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_template: bool = True):
-    """Returns a generate() closure matching the fixed interface:
-    generate(prompts, max_new_tokens, temperature, top_p) -> List[str].
+    """Returns generate(prompts, max_new_tokens, temperature, top_p, seed=None,
+    chat_template=None) -> List[str].
 
-    max_input_tokens sets an explicit truncation length -- tokenizer.model_max_length
-    is a huge sentinel (e.g. ~1e30) on several tokenizers when no real limit is set,
-    which makes truncation=True silently do nothing if relied on as the default.
+    max_input_tokens is an explicit cap -- tokenizer.model_max_length defaults to
+    a huge sentinel on some tokenizers, silently disabling truncation otherwise.
 
-    apply_chat_template wraps each raw prompt as a user turn via the tokenizer's own
-    chat template when one is defined -- most instruct models (BackdoorLLM's
-    Llama-2-Chat pair included) expect this, and skipping it materially shifts
-    refusal rates versus how the benchmark's own pipeline calls the model.
+    apply_chat_template (set at construction) toggles templating at all; the
+    call-time chat_template overrides which template is used instead of the
+    tokenizer's own default.
     """
     import torch
 
-    def generate(prompts: list[str], max_new_tokens: int, temperature: float, top_p: float) -> list[str]:
-        if apply_chat_template and tokenizer.chat_template:
+    def generate(
+        prompts: list[str],
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        seed: int | None = None,
+        chat_template: str | None = None,
+    ) -> list[str]:
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        if apply_chat_template and (chat_template or tokenizer.chat_template):
+            template = chat_template if chat_template is not None else tokenizer.chat_template
             prompts = [
                 tokenizer.apply_chat_template(
-                    [{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True
+                    [{"role": "user", "content": p}],
+                    chat_template=template,
+                    tokenize=False,
+                    add_generation_prompt=True,
                 )
                 for p in prompts
             ]
@@ -117,6 +96,10 @@ def main():
     parser.add_argument("--no-chat-template", action="store_true", help="Skip the tokenizer's chat template, send raw prompts")
     parser.add_argument("--batch-size", type=int, default=8, help="Prompts per generate() call -- the full HarmBench/ThaiSafetyBench prompt sets (400/1,889) would OOM a 12GB GPU in one call")
     parser.add_argument("--max-input-tokens", type=int, default=2048)
+    parser.add_argument("--seed", type=int, default=None, help="Seed for reproducible sampling")
+    parser.add_argument(
+        "--chat-template", default=None, help="Override chat template string (defaults to the tokenizer's own)"
+    )
     parser.add_argument("--out", default=None, help="Optional path to write responses JSONL to")
     args = parser.parse_args()
 
@@ -128,23 +111,88 @@ def main():
     records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]
     prompts = [r["model_input"] for r in records]
 
-    responses = []
-    for i in range(0, len(prompts), args.batch_size):
-        batch = prompts[i : i + args.batch_size]
-        responses.extend(generate(batch, args.max_new_tokens, args.temperature, args.top_p))
-        print(f"Generated {min(i + args.batch_size, len(prompts))}/{len(prompts)}")
+    def write_out(records_to_write: list[dict]) -> None:
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                for record in records_to_write:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print(f"Wrote {len(records_to_write)} responses -> {args.out}")
+        else:
+            for record in records_to_write[:5]:
+                print(json.dumps(record, ensure_ascii=False))
+
+    def clear_cuda_cache() -> None:
+        # Unguarded empty_cache() raises on CPU-only torch builds.
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # A failed generation is None, not "" -- an empty string is a real, scoreable
+    # output (e.g. immediate EOS), not an infra failure.
+    MAX_FAILURE_RATE = 0.2
+
+    def generate_one_prompt(prompt: str, record_id) -> str | None:
+        try:
+            return generate(
+                [prompt], args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
+            )[0]
+        except Exception as e:
+            print(f"WARNING: generation failed for record {record_id!r}: {e}")
+            return None
+
+    responses: list[str | None] = []
+    failed = 0
+    try:
+        for i in range(0, len(prompts), args.batch_size):
+            batch = prompts[i : i + args.batch_size]
+            try:
+                responses.extend(
+                    generate(
+                        batch, args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
+                    )
+                )
+            except Exception as e:
+                # Likely OOM -- clear cache and retry per-prompt so only the
+                # actually oversized prompt(s) get marked failed.
+                print(f"WARNING: batch {i}-{i + len(batch)} failed ({e}); clearing cache and retrying per-prompt")
+                clear_cuda_cache()
+                for j, prompt in enumerate(batch):
+                    record_id = records[i + j].get("id", i + j)
+                    response = generate_one_prompt(prompt, record_id)
+                    responses.append(response)
+                    if response is None:
+                        failed += 1
+
+            processed = len(responses)
+            print(f"Generated {processed}/{len(prompts)} ({failed} failed)")
+            if processed >= 10 and failed / processed > MAX_FAILURE_RATE:
+                raise RuntimeError(
+                    f"Aborting: {failed}/{processed} generations failed (>{MAX_FAILURE_RATE:.0%}) "
+                    "-- likely a real bug rather than isolated OOMs; not producing a verdict over this run."
+                )
+    except RuntimeError:
+        # Preserve partial output before propagating the abort.
+        partial_records = records[: len(responses)]
+        for record, response in zip(partial_records, responses):
+            record["response"] = response if response is not None else ""
+            record["generation_failed"] = response is None
+        write_out(partial_records)
+        raise
 
     for record, response in zip(records, responses):
-        record["response"] = response
+        record["response"] = response if response is not None else ""
+        record["generation_failed"] = response is None
 
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        print(f"Wrote {len(records)} responses -> {args.out}")
-    else:
-        for record in records[:5]:
-            print(json.dumps(record, ensure_ascii=False))
+    if failed:
+        print(f"WARNING: {failed}/{len(prompts)} prompts had failed generations")
+
+    # generate() closes over model/tokenizer -- drop it before unloading.
+    del generate
+    model = unload(model)
+    del tokenizer
+
+    write_out(records)
 
 
 if __name__ == "__main__":
