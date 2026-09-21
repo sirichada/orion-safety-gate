@@ -30,6 +30,7 @@ def load():
             "language": "th",
             "source_benchmark": "thaisafetybench",
             "native_category": table["risk_area"][i],
+            "functional_category": None,
             "context": None,
             "model_input": prompt,
         }

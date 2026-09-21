@@ -27,6 +27,7 @@ def load():
                 "language": "en",
                 "source_benchmark": "harmbench",
                 "native_category": row["SemanticCategory"],
+                "functional_category": row["FunctionalCategory"],
                 "context": context,
                 "model_input": model_input,
             }
