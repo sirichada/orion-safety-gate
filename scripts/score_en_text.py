@@ -140,6 +140,10 @@ def score_records(records: list[dict], use_4bit: bool = True, batch_size: int = 
             output_ids = model.generate(**inputs, max_new_tokens=1, do_sample=False, pad_token_id=tokenizer.pad_token_id)
         input_len = inputs["input_ids"].shape[1]
         completions = tokenizer.batch_decode(output_ids[:, input_len:], skip_special_tokens=True)
+        # Varying prompt lengths leave idle cached blocks between batches otherwise.
+        del inputs, output_ids
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         for text in completions:
             answer = text.strip().lower()
             labels.append(1 if answer == "yes" else 0 if answer == "no" else -1)
