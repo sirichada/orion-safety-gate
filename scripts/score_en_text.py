@@ -112,7 +112,9 @@ def build_classifier_prompt(record: dict, tokenizer) -> str:
     return LLAMA2_CLS_PROMPT["prompt"].format(behavior=record["prompt"], generation=generation)
 
 
-def score_records(records: list[dict], use_4bit: bool = True, batch_size: int = 8) -> list[dict]:
+def score_records(
+    records: list[dict], use_4bit: bool = True, batch_size: int = 8, sort_by_length: bool = False
+) -> list[dict]:
     for record in records:
         if "response" not in record:
             raise ValueError(f"Record {record.get('id')!r} is missing a 'response' field")
@@ -121,6 +123,7 @@ def score_records(records: list[dict], use_4bit: bool = True, batch_size: int = 
     # If the prompt still overflows after clipping, truncate from the left so
     # the trailing Rules block / "Answer: [/INST]" survive.
     tokenizer.truncation_side = "left"
+    print(f"attn_implementation: {getattr(model.config, '_attn_implementation', 'unknown')}")
 
     is_copyright = lambda r: r.get("functional_category") == COPYRIGHT_CATEGORY
     is_failed = lambda r: r.get("generation_failed")
@@ -128,10 +131,20 @@ def score_records(records: list[dict], use_4bit: bool = True, batch_size: int = 
     scorable_idx = [i for i, r in enumerate(records) if not is_copyright(r) and not is_failed(r)]
     prompts = [build_classifier_prompt(records[i], tokenizer) for i in scorable_idx]
 
+    if sort_by_length:
+        # Sort scorable_idx/prompts together by tokenized length so batches have
+        # less padding variance -- label write-back below still zips against
+        # scorable_idx, so the permutation stays consistent.
+        order = sorted(range(len(prompts)), key=lambda i: len(tokenizer(prompts[i], add_special_tokens=False)["input_ids"]))
+        scorable_idx = [scorable_idx[i] for i in order]
+        prompts = [prompts[i] for i in order]
+
     import torch
 
     labels = []
     for i in range(0, len(prompts), batch_size):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         batch = prompts[i : i + batch_size]
         inputs = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True, max_length=MAX_PROMPT_TOKENS
@@ -143,7 +156,12 @@ def score_records(records: list[dict], use_4bit: bool = True, batch_size: int = 
         # Varying prompt lengths leave idle cached blocks between batches otherwise.
         del inputs, output_ids
         if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated()
+            peak = torch.cuda.max_memory_allocated()
             torch.cuda.empty_cache()
+            print(
+                f"batch {i // batch_size}: padded_len={input_len} allocated={allocated / 1e9:.2f}GB peak={peak / 1e9:.2f}GB"
+            )
         for text in completions:
             answer = text.strip().lower()
             labels.append(1 if answer == "yes" else 0 if answer == "no" else -1)
@@ -198,11 +216,16 @@ def main():
     parser.add_argument("--responses", required=True, help="JSONL with prompt-set records + a 'response' field")
     parser.add_argument("--no-4bit", action="store_true", help="Disable 4-bit quantization")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--sort-by-length", action="store_true", help="Sort prompts by tokenized length before batching"
+    )
     parser.add_argument("--out", default=None, help="Optional path to write per-record scores JSONL to")
     args = parser.parse_args()
 
     records = [json.loads(line) for line in Path(args.responses).read_text(encoding="utf-8").splitlines() if line]
-    scored = score_records(records, use_4bit=not args.no_4bit, batch_size=args.batch_size)
+    scored = score_records(
+        records, use_4bit=not args.no_4bit, batch_size=args.batch_size, sort_by_length=args.sort_by_length
+    )
     result = aggregate(scored)
 
     if args.out:
