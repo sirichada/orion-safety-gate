@@ -223,6 +223,10 @@ __marimo__/
 # Fetched benchmark data (re-downloaded via scripts/fetch_data.sh)
 data/
 
+responses_*.jsonl
+scored_*.jsonl
+*_chunks/
+
 # Run logs and machine-specific debug notes
 logs/
 
