@@ -5,3 +5,4 @@ bitsandbytes
 peft
 sentencepiece
 pyarrow
+protobuf
