@@ -227,8 +227,8 @@ responses_*.jsonl
 scored_*.jsonl
 *_chunks/
 
-# Run logs and machine-specific debug notes
-logs/
+# Run logs, run index, machine-specific debug notes, and generated response/score files
+runs/
 
 # Uncommitted run reports
 docs/
