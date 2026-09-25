@@ -95,6 +95,10 @@ def _complete(client: httpx.Client, payload: dict, limits_seen: list) -> tuple[s
                     limits_seen.append(True)
                     seen = {k: v for k, v in resp.headers.items() if _LIMIT_HEADER_PATTERN.search(k)}
                     print(f"API limit/quota headers: {seen or 'none advertised'}")
+                    try:
+                        print(f"API message fields: {sorted(resp.json()['choices'][0]['message'])}")
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        pass
                 return _parse(resp)
             if resp.status_code not in RETRYABLE_STATUS:
                 raise GenerationFailed(f"HTTP {resp.status_code}: {_redact(resp.text[:300])}")
