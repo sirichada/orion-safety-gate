@@ -16,6 +16,7 @@ Requires: torch, transformers, peft (if --adapter given), bitsandbytes
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 from hf_model import load_causal_lm, unload
@@ -151,6 +152,19 @@ def main():
         if args.backend == "api":
             finish_reasons.extend([None] * count if failed else generate.finish_reasons)
 
+    def fill_record(k: int, record: dict, response: str | None) -> None:
+        record["response"] = response if response is not None else ""
+        record["generation_failed"] = response is None
+        if args.backend == "api":
+            finish = finish_reasons[k]
+            # An empty completion cut off at the token cap never answered: it must not be scored as a refusal.
+            # generation_failed is the flag every scorer already excludes; no_answer keeps the cause distinguishable.
+            no_answer = response is not None and not response.strip() and finish == "length"
+            record["finish_reason"] = finish
+            record["no_answer"] = no_answer
+            if no_answer:
+                record["generation_failed"] = True
+
     # A failed generation is None, not "" -- an empty string is a real, scoreable
     # output (e.g. immediate EOS), not an infra failure.
     MAX_FAILURE_RATE = 0.2
@@ -200,21 +214,22 @@ def main():
         # Preserve partial output before propagating the abort.
         partial_records = records[: len(responses)]
         for k, (record, response) in enumerate(zip(partial_records, responses)):
-            record["response"] = response if response is not None else ""
-            record["generation_failed"] = response is None
-            if args.backend == "api":
-                record["finish_reason"] = finish_reasons[k]
+            fill_record(k, record, response)
         write_out(partial_records)
         raise
 
     for k, (record, response) in enumerate(zip(records, responses)):
-        record["response"] = response if response is not None else ""
-        record["generation_failed"] = response is None
-        if args.backend == "api":
-            record["finish_reason"] = finish_reasons[k]
+        fill_record(k, record, response)
 
     if failed:
         print(f"WARNING: {failed}/{len(prompts)} prompts had failed generations")
+    if args.backend == "api":
+        n_no_answer = sum(r["no_answer"] for r in records)
+        print(f"finish_reason counts: {dict(Counter(finish_reasons))}")
+        print(
+            f"no_answer (empty content, finish_reason=length): {n_no_answer}/{len(records)} "
+            "-- flagged generation_failed so scorers exclude them from the rate"
+        )
 
     # generate() closes over model/tokenizer -- drop it before unloading.
     del generate
