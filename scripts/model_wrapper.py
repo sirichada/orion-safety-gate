@@ -101,12 +101,26 @@ def main():
         "--chat-template", default=None, help="Override chat template string (defaults to the tokenizer's own)"
     )
     parser.add_argument("--out", default=None, help="Optional path to write responses JSONL to")
+    parser.add_argument(
+        "--backend",
+        choices=["hf", "api"],
+        default="hf",
+        help="hf = local transformers weights; api = OpenAI-compatible HTTP endpoint (--model is then the API model id)",
+    )
     args = parser.parse_args()
 
-    model, tokenizer = load_model(args.model, args.adapter, use_4bit=not args.no_4bit)
-    generate = make_generate(
-        model, tokenizer, max_input_tokens=args.max_input_tokens, apply_chat_template=not args.no_chat_template
-    )
+    if args.backend == "api":
+        if args.adapter or args.no_4bit or args.no_chat_template or args.chat_template is not None or args.max_input_tokens != 2048:
+            parser.error("--adapter/--no-4bit/--no-chat-template/--chat-template/--max-input-tokens are hf-only")
+        from api_model import make_api_generate
+
+        model = tokenizer = None
+        generate = make_api_generate(args.model, max_workers=args.batch_size)
+    else:
+        model, tokenizer = load_model(args.model, args.adapter, use_4bit=not args.no_4bit)
+        generate = make_generate(
+            model, tokenizer, max_input_tokens=args.max_input_tokens, apply_chat_template=not args.no_chat_template
+        )
 
     records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]
     prompts = [r["model_input"] for r in records]
@@ -122,11 +136,20 @@ def main():
                 print(json.dumps(record, ensure_ascii=False))
 
     def clear_cuda_cache() -> None:
+        if args.backend == "api":
+            return
         # Unguarded empty_cache() raises on CPU-only torch builds.
         import torch
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # Populated only by backends that report a per-generation finish_reason (api); stays aligned with `responses`.
+    finish_reasons: list[str | None] = []
+
+    def collect_finish_reasons(count: int, failed: bool = False) -> None:
+        if args.backend == "api":
+            finish_reasons.extend([None] * count if failed else generate.finish_reasons)
 
     # A failed generation is None, not "" -- an empty string is a real, scoreable
     # output (e.g. immediate EOS), not an infra failure.
@@ -152,6 +175,7 @@ def main():
                         batch, args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
                     )
                 )
+                collect_finish_reasons(len(batch))
             except Exception as e:
                 # Likely OOM -- clear cache and retry per-prompt so only the
                 # actually oversized prompt(s) get marked failed.
@@ -161,6 +185,7 @@ def main():
                     record_id = records[i + j].get("id", i + j)
                     response = generate_one_prompt(prompt, record_id)
                     responses.append(response)
+                    collect_finish_reasons(1, failed=response is None)
                     if response is None:
                         failed += 1
 
@@ -174,22 +199,27 @@ def main():
     except RuntimeError:
         # Preserve partial output before propagating the abort.
         partial_records = records[: len(responses)]
-        for record, response in zip(partial_records, responses):
+        for k, (record, response) in enumerate(zip(partial_records, responses)):
             record["response"] = response if response is not None else ""
             record["generation_failed"] = response is None
+            if args.backend == "api":
+                record["finish_reason"] = finish_reasons[k]
         write_out(partial_records)
         raise
 
-    for record, response in zip(records, responses):
+    for k, (record, response) in enumerate(zip(records, responses)):
         record["response"] = response if response is not None else ""
         record["generation_failed"] = response is None
+        if args.backend == "api":
+            record["finish_reason"] = finish_reasons[k]
 
     if failed:
         print(f"WARNING: {failed}/{len(prompts)} prompts had failed generations")
 
     # generate() closes over model/tokenizer -- drop it before unloading.
     del generate
-    model = unload(model)
+    if model is not None:
+        model = unload(model)
     del tokenizer
 
     write_out(records)
