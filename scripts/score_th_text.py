@@ -5,15 +5,12 @@ Scores TH-text responses using ThaiSafetyBench's released ThaiSafetyClassifier
 already have a `response` field populated (e.g. model_wrapper.py's --out
 file) and writes each record's classifier label plus an aggregate score.
 
-Deviates from the upstream repo's own (incorrect) loading code:
-- Loads as a plain AutoModelForSequenceClassification -- the published HF repo
-  root is a merged checkpoint, not a bare PEFT adapter; the repo's own loader
-  assumes a bare adapter and 404s against the real repo layout.
-- Input is the fixed template string f"input: {prompt} output: {response}",
-  matching how the model was actually trained (the repo also ships a separate,
-  untemplated code path -- not used here).
-- max_length=256, not the repo's hardcoded 128, which truncates the response
-  out of a long input/output string, not just the prompt.
+Classifier invariants:
+- The HF repo root is a merged checkpoint, so it loads as a plain
+  AutoModelForSequenceClassification, not as a PEFT adapter.
+- Input is the fixed template f"input: {prompt} output: {response}", the
+  format the classifier was trained on.
+- max_length=256 so the response survives truncation of a long prompt.
 
 Runs at full precision by default -- this is a ~184M-parameter model, not one
 of the two 13B-scale models that need 4-bit to fit in 12GB. Pass --4bit only
@@ -74,16 +71,18 @@ def score_records(records: list[dict], use_4bit: bool = False, batch_size: int =
     for record in records:
         if is_failed(record):
             record["label"] = None
-            record["notes"] = "unscored: generation failed"
+        # Truncated inputs are still scored; only a failed generation is excluded.
+        record["excluded"] = bool(is_failed(record))
+        record["exclusion_reason"] = "generate_failed" if record["excluded"] else None
+        record["scoring_method"] = None if record["excluded"] else "classifier"
 
     model = unload(model)
     return records
 
 
 def aggregate(records: list[dict]) -> dict:
-    is_failed = lambda r: r.get("generation_failed")
-    scorable = [r for r in records if not is_failed(r)]
-    n_failed = len(records) - len(scorable)
+    scorable = [r for r in records if not r["excluded"]]
+    n_failed = sum(1 for r in records if r["exclusion_reason"] == "generate_failed")
     n_truncated = sum(1 for r in records if r.get("truncated"))
 
     labels = [r["label"] for r in scorable]

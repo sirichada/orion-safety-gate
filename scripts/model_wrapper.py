@@ -94,6 +94,12 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--no-4bit", action="store_true", help="Disable 4-bit quantization")
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=3,
+        help="Abort after this many batches in a row that produced no answer for any prompt, even after per-prompt retry",
+    )
     parser.add_argument("--no-chat-template", action="store_true", help="Skip the tokenizer's chat template, send raw prompts")
     parser.add_argument("--batch-size", type=int, default=8, help="Prompts per generate() call -- the full HarmBench/ThaiSafetyBench prompt sets (400/1,889) would OOM a 12GB GPU in one call")
     parser.add_argument("--max-input-tokens", type=int, default=2048)
@@ -109,6 +115,8 @@ def main():
         help="hf = local transformers weights; api = OpenAI-compatible HTTP endpoint (--model is then the API model id)",
     )
     args = parser.parse_args()
+    if args.max_consecutive_failures < 1:
+        parser.error("--max-consecutive-failures must be >= 1")
 
     if args.backend == "api":
         if args.adapter or args.no_4bit or args.no_chat_template or args.chat_template is not None or args.max_input_tokens != 2048:
@@ -154,6 +162,14 @@ def main():
             finish_reasons.extend([None] * count if failed else generate.finish_reasons)
             attempts.extend([None] * count if failed else generate.attempts)
 
+    def is_no_answer(response: str | None, finish: str | None) -> bool:
+        return response is not None and not response.strip() and finish == "length"
+
+    def answered(k: int) -> bool:
+        if responses[k] is None:
+            return False
+        return args.backend != "api" or not is_no_answer(responses[k], finish_reasons[k])
+
     def fill_record(k: int, record: dict, response: str | None) -> None:
         record["response"] = response if response is not None else ""
         record["generation_failed"] = response is None
@@ -161,7 +177,7 @@ def main():
             finish = finish_reasons[k]
             # An empty completion cut off at the token cap never answered: it must not be scored as a refusal.
             # generation_failed is the flag every scorer already excludes; no_answer keeps the cause distinguishable.
-            no_answer = response is not None and not response.strip() and finish == "length"
+            no_answer = is_no_answer(response, finish)
             record["finish_reason"] = finish
             record["attempts"] = attempts[k]
             record["no_answer"] = no_answer
@@ -170,8 +186,6 @@ def main():
 
     # A failed generation is None, not "" -- an empty string is a real, scoreable
     # output (e.g. immediate EOS), not an infra failure.
-    MAX_FAILURE_RATE = 0.2
-
     def generate_one_prompt(prompt: str, record_id) -> str | None:
         try:
             return generate(
@@ -183,16 +197,17 @@ def main():
 
     responses: list[str | None] = []
     failed = 0
+    # Only unbroken runs of fully-failed batches count; scattered failures never abort.
+    consecutive_failed_batches = 0
     try:
         for i in range(0, len(prompts), args.batch_size):
             batch = prompts[i : i + args.batch_size]
+            # Only generate() sits inside the try: anything that raised after responses grew would
+            # re-append the batch on retry and misalign every later record.
             try:
-                responses.extend(
-                    generate(
-                        batch, args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
-                    )
+                batch_responses = generate(
+                    batch, args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
                 )
-                collect_api_metadata(len(batch))
             except Exception as e:
                 # Likely OOM -- clear cache and retry per-prompt so only the
                 # actually oversized prompt(s) get marked failed.
@@ -205,13 +220,19 @@ def main():
                     collect_api_metadata(1, failed=response is None)
                     if response is None:
                         failed += 1
+            else:
+                responses.extend(batch_responses)
+                collect_api_metadata(len(batch))
+
+            batch_answered = any(answered(k) for k in range(i, len(responses)))
+            consecutive_failed_batches = 0 if batch_answered else consecutive_failed_batches + 1
 
             processed = len(responses)
             print(f"Generated {processed}/{len(prompts)} ({failed} failed)")
-            if processed >= 10 and failed / processed > MAX_FAILURE_RATE:
+            if consecutive_failed_batches >= args.max_consecutive_failures:
                 raise RuntimeError(
-                    f"Aborting: {failed}/{processed} generations failed (>{MAX_FAILURE_RATE:.0%}) "
-                    "-- likely a real bug rather than isolated OOMs; not producing a verdict over this run."
+                    f"Aborting: {consecutive_failed_batches} consecutive batches produced no answer for any prompt "
+                    f"({failed}/{processed} generations raised overall); not producing a verdict over this run."
                 )
     except RuntimeError:
         # Preserve partial output before propagating the abort.
