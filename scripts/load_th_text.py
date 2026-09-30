@@ -24,8 +24,10 @@ def load():
     n = len(table["id"])
     for i in range(n):
         prompt = table["prompt"][i]
+        native_id = str(table["id"][i])
         yield {
-            "id": str(table["id"][i]),
+            "id": f"thaisafetybench_{native_id}",
+            "native_id": native_id,
             "prompt": prompt,
             "language": "th",
             "source_benchmark": "thaisafetybench",

@@ -19,10 +19,11 @@ def load():
         for row in csv.DictReader(f):
             prompt = row["Behavior"]
             context = row["ContextString"] or None
-            # HarmBench's own no-attack baseline template (baselines/direct_request/direct_request.py)
+            # HarmBench's no-attack template: context and prompt joined by a --- separator.
             model_input = f"{context}\n\n---\n\n{prompt}" if context else prompt
             yield {
-                "id": row["BehaviorID"],
+                "id": f"harmbench_{row['BehaviorID']}",
+                "native_id": row["BehaviorID"],
                 "prompt": prompt,
                 "language": "en",
                 "source_benchmark": "harmbench",
