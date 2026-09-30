@@ -7,8 +7,15 @@ against an OpenAI-compatible /chat/completions endpoint.
 Every prompt is sent as exactly one user message; no system message is ever added. The server
 applies its own chat template and input-length limit, so chat_template is rejected rather than
 ignored. One request per prompt: len(prompts) requests are in flight at once and results come
-back in input order. finish_reason for the most recent successful call is exposed as
-generate.finish_reasons (aligned with the returned list).
+back in input order. finish_reason and the number of attempts for the most recent
+successful call are exposed as generate.finish_reasons and generate.attempts (aligned with
+the returned list).
+
+A response that is empty and cut off at the token cap is re-requested up to NO_ANSWER_RETRIES
+more times with identical parameters, and the first non-empty result wins: the endpoint's
+output varies between identical requests, so a re-request can succeed where the first attempt
+spent its whole budget before answering. Such retries are ordinary successful requests and
+never count toward the failure budget.
 
 Requires ORION_API_KEY in the environment. The key is only ever placed in the Authorization
 header of the HTTP client and is never printed or written anywhere.
@@ -32,6 +39,7 @@ BASE_URL = "https://api.orion.cmkl.ai/v1"
 API_KEY_ENV = "ORION_API_KEY"
 
 MAX_ATTEMPTS = 6
+NO_ANSWER_RETRIES = 3
 BACKOFF_BASE_S = 1.0
 BACKOFF_CAP_S = 60.0
 REQUEST_TIMEOUT_S = 300.0
@@ -141,7 +149,7 @@ def make_api_generate(model_id: str, max_workers: int = 8, base_url: str = BASE_
         if chat_template is not None:
             raise ValueError("chat_template is not supported by the API backend: the server applies its own template")
 
-        def one(prompt: str) -> tuple[str, str | None]:
+        def one(prompt: str) -> tuple[str, str | None, int]:
             payload = {
                 "model": model_id,
                 "messages": [{"role": "user", "content": prompt}],
@@ -151,16 +159,24 @@ def make_api_generate(model_id: str, max_workers: int = 8, base_url: str = BASE_
             }
             if seed is not None:
                 payload["seed"] = seed
-            return _complete(client, payload, limits_seen)
+            attempts = 0
+            while True:
+                text, finish = _complete(client, payload, limits_seen)
+                attempts += 1
+                if text.strip() or finish != "length" or attempts > NO_ANSWER_RETRIES:
+                    return text, finish, attempts
+                print(f"API no-answer retry: empty content at the token cap, attempt {attempts}/{NO_ANSWER_RETRIES + 1}")
 
         with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(prompts)))) as pool:
             futures = [pool.submit(one, p) for p in prompts]
             results = [f.result() for f in futures]  # submission order == input order; raises on first failure
 
-        generate.finish_reasons = [finish for _, finish in results]
-        return [text for text, _ in results]
+        generate.finish_reasons = [finish for _, finish, _ in results]
+        generate.attempts = [n for _, _, n in results]
+        return [text for text, _, _ in results]
 
     generate.finish_reasons = []
+    generate.attempts = []
     return generate
 
 

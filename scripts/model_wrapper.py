@@ -145,12 +145,14 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # Populated only by backends that report a per-generation finish_reason (api); stays aligned with `responses`.
+    # Populated only by backends that report per-generation metadata (api); both stay aligned with `responses`.
     finish_reasons: list[str | None] = []
+    attempts: list[int | None] = []
 
-    def collect_finish_reasons(count: int, failed: bool = False) -> None:
+    def collect_api_metadata(count: int, failed: bool = False) -> None:
         if args.backend == "api":
             finish_reasons.extend([None] * count if failed else generate.finish_reasons)
+            attempts.extend([None] * count if failed else generate.attempts)
 
     def fill_record(k: int, record: dict, response: str | None) -> None:
         record["response"] = response if response is not None else ""
@@ -161,6 +163,7 @@ def main():
             # generation_failed is the flag every scorer already excludes; no_answer keeps the cause distinguishable.
             no_answer = response is not None and not response.strip() and finish == "length"
             record["finish_reason"] = finish
+            record["attempts"] = attempts[k]
             record["no_answer"] = no_answer
             if no_answer:
                 record["generation_failed"] = True
@@ -189,7 +192,7 @@ def main():
                         batch, args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
                     )
                 )
-                collect_finish_reasons(len(batch))
+                collect_api_metadata(len(batch))
             except Exception as e:
                 # Likely OOM -- clear cache and retry per-prompt so only the
                 # actually oversized prompt(s) get marked failed.
@@ -199,7 +202,7 @@ def main():
                     record_id = records[i + j].get("id", i + j)
                     response = generate_one_prompt(prompt, record_id)
                     responses.append(response)
-                    collect_finish_reasons(1, failed=response is None)
+                    collect_api_metadata(1, failed=response is None)
                     if response is None:
                         failed += 1
 
@@ -225,9 +228,15 @@ def main():
         print(f"WARNING: {failed}/{len(prompts)} prompts had failed generations")
     if args.backend == "api":
         n_no_answer = sum(r["no_answer"] for r in records)
+        retried = [r for r in records if (r["attempts"] or 1) > 1]
         print(f"finish_reason counts: {dict(Counter(finish_reasons))}")
+        print(f"attempts per record: {dict(sorted(Counter(attempts).items(), key=lambda kv: (kv[0] is None, kv[0])))}")
         print(
-            f"no_answer (empty content, finish_reason=length): {n_no_answer}/{len(records)} "
+            f"records that needed a no-answer retry: {len(retried)}/{len(records)}, "
+            f"recovered: {sum(1 for r in retried if not r['no_answer'])}"
+        )
+        print(
+            f"no_answer (still empty at finish_reason=length after all attempts): {n_no_answer}/{len(records)} "
             "-- flagged generation_failed so scorers exclude them from the rate"
         )
 
