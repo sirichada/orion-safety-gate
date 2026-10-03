@@ -6,6 +6,11 @@ from capabilities import Capabilities, CapabilitiesError, parse_capabilities
 from cases import DIRECTIONS, GATES, NO_CASE_REASON, NOT_IMPLEMENTED_REASON, REGISTRY, select_cases
 
 SMARTNESS = ["coding_capability", "over_refusal", "capability_honesty"]
+# Smartness cases are registered but not implemented yet, so every declaration reports them.
+SMARTNESS_NOT_ATTEMPTED = [
+    *[{"case_id": case_id, "gate": "smartness", "reason": NOT_IMPLEMENTED_REASON} for case_id in SMARTNESS],
+    {"case_id": None, "gate": "smartness", "reason": NO_CASE_REASON.format(gate="smartness")},
+]
 
 
 def select(modalities, languages):
@@ -21,57 +26,61 @@ def case_ids(selection):
     return [case.case_id for case in selection.cases]
 
 
-def gate_level_entries(selection):
-    return [entry for entry in selection.declared_scope["not_attempted"] if entry["case_id"] is None]
+def gate_level_entries(selection, gate):
+    return [
+        entry
+        for entry in selection.declared_scope["not_attempted"]
+        if entry["case_id"] is None and entry["gate"] == gate
+    ]
 
 
 def test_text_english_only():
     selection = select(["text"], ["en"])
-    assert case_ids(selection) == ["en_text", *SMARTNESS]
+    assert case_ids(selection) == ["en_text"]
     assert selection.capability_honesty_languages == ("en",)
-    assert selection.declared_scope["not_attempted"] == []
-    assert selection.not_testable_gates == frozenset()
+    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED
+    assert selection.not_testable_gates == frozenset({"smartness"})
 
 
 def test_text_thai_only():
     selection = select(["text"], ["th"])
-    assert case_ids(selection) == ["th_text", *SMARTNESS]
+    assert case_ids(selection) == ["th_text"]
     assert selection.capability_honesty_languages == ("th",)
-    assert selection.declared_scope["not_attempted"] == []
+    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED
 
 
 def test_text_english_and_thai():
     selection = select(["text"], ["th", "en"])
-    assert case_ids(selection) == ["en_text", "th_text", *SMARTNESS]
+    assert case_ids(selection) == ["en_text", "th_text"]
     assert selection.capability_honesty_languages == ("en", "th")
-    assert selection.not_testable_gates == frozenset()
+    assert selection.not_testable_gates == frozenset({"smartness"})
 
 
 def test_declared_image_is_reported_not_attempted():
     selection = select(["text", "image"], ["en", "th"])
-    assert case_ids(selection) == ["en_text", "th_text", *SMARTNESS]
+    assert case_ids(selection) == ["en_text", "th_text"]
     assert selection.declared_scope["not_attempted"] == [
         {"case_id": "en_image", "gate": "safety", "reason": NOT_IMPLEMENTED_REASON},
         {"case_id": "th_image", "gate": "safety", "reason": NOT_IMPLEMENTED_REASON},
+        *SMARTNESS_NOT_ATTEMPTED,
     ]
-    assert selection.not_testable_gates == frozenset()
+    assert "safety" not in selection.not_testable_gates
 
 
 def test_declared_image_lists_only_declared_languages():
     selection = select(["text", "image"], ["th"])
-    assert selection.declared_scope["not_attempted"] == [
-        {"case_id": "th_image", "gate": "safety", "reason": NOT_IMPLEMENTED_REASON},
-    ]
+    image_entries = [e for e in selection.declared_scope["not_attempted"] if e["case_id"] in ("en_image", "th_image")]
+    assert image_entries == [{"case_id": "th_image", "gate": "safety", "reason": NOT_IMPLEMENTED_REASON}]
 
 
 @pytest.mark.parametrize(
     "modalities, languages",
     [(["text"], ["en"]), (["text"], ["th"]), (["text"], ["en", "th"]), (["text", "image"], ["en", "th"])],
 )
-def test_text_declarations_never_leave_a_gate_untestable(modalities, languages):
+def test_text_declarations_never_leave_safety_untestable(modalities, languages):
     selection = select(modalities, languages)
-    assert selection.not_testable_gates == frozenset()
-    assert gate_level_entries(selection) == []
+    assert "safety" not in selection.not_testable_gates
+    assert gate_level_entries(selection, "safety") == []
 
 
 def test_declaration_without_text_is_rejected():
@@ -81,8 +90,8 @@ def test_declaration_without_text_is_rejected():
 
 def test_gate_with_no_implemented_case_is_not_testable():
     selection = select_unvalidated(["image"], ["en"])
-    assert selection.not_testable_gates == frozenset({"safety"})
-    assert gate_level_entries(selection) == [
+    assert selection.not_testable_gates == frozenset({"safety", "smartness"})
+    assert gate_level_entries(selection, "safety") == [
         {"case_id": None, "gate": "safety", "reason": NO_CASE_REASON.format(gate="safety")}
     ]
     assert {"case_id": "en_image", "gate": "safety", "reason": NOT_IMPLEMENTED_REASON} in selection.declared_scope[
@@ -94,9 +103,8 @@ def test_declared_scope_echoes_declaration_and_serializes():
     selection = select(["text", "image"], ["th", "en"])
     assert selection.declared_scope["modalities"] == ["image", "text"]
     assert selection.declared_scope["languages"] == ["en", "th"]
-    json.dumps(selection.declared_scope)
     # Gate-level entries carry case_id None, which must serialize too.
-    json.dumps(select_unvalidated(["image"], ["en"]).declared_scope)
+    json.dumps(selection.declared_scope)
 
 
 def test_registry_is_well_formed():
@@ -107,6 +115,5 @@ def test_registry_is_well_formed():
         assert case.direction in DIRECTIONS
 
 
-def test_every_gate_has_an_implemented_text_case():
-    for gate in GATES:
-        assert any(case.gate == gate and case.implemented and case.modality in (None, "text") for case in REGISTRY)
+def test_safety_gate_has_an_implemented_text_case():
+    assert any(case.gate == "safety" and case.implemented and case.modality == "text" for case in REGISTRY)

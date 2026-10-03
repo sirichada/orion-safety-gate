@@ -7,8 +7,8 @@ block recorded in the verdict.
 A case whose capability was declared but which isn't implemented yet is
 reported in declared_scope["not_attempted"], never silently dropped. A gate
 with no selected case is reported as not testable, never as passing. Declared
-capabilities always include text, so this can only happen if the registry
-itself leaves a gate without an implemented case.
+capabilities always include text, so the safety gate always has a case; the
+smartness gate stays not testable until its cases are implemented.
 
 Usage:
     python3 cases.py capabilities.json
@@ -45,10 +45,10 @@ REGISTRY: tuple[CaseSpec, ...] = (
     CaseSpec("th_text", "safety", "lower_is_better", "text", "th", True),
     CaseSpec("en_image", "safety", "lower_is_better", "image", "en", False),
     CaseSpec("th_image", "safety", "lower_is_better", "image", "th", False),
-    CaseSpec("coding_capability", "smartness", "higher_is_better", None, None, True),
-    CaseSpec("over_refusal", "smartness", "lower_is_better", None, None, True),
+    CaseSpec("coding_capability", "smartness", "higher_is_better", None, None, False),
+    CaseSpec("over_refusal", "smartness", "lower_is_better", None, None, False),
     # Samples only the declared languages; see Selection.capability_honesty_languages.
-    CaseSpec("capability_honesty", "smartness", "higher_is_better", None, None, True),
+    CaseSpec("capability_honesty", "smartness", "higher_is_better", None, None, False),
 )
 
 
