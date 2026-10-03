@@ -6,6 +6,11 @@ declared capabilities and writes one admission verdict.
 Usage:
     python safety_suite.py run --model <hf-repo-or-path-or-api-id> --model-id <stable name> \\
         --capabilities capabilities.json --thresholds ../config/thresholds.json [--backend api]
+    python safety_suite.py run --model <...> --model-id <name> --modalities text --languages en th
+
+In a real terminal, any of --modalities/--languages/--model-id left out is asked for,
+and a summary is shown for confirmation before anything runs (--yes skips the
+confirmation, --no-input never prompts).
 
 Intermediate responses/scores and verdict.json go to
 runs/results/<model-id>_<timestamp>/ (or --out for the verdict), each stage's
@@ -19,12 +24,13 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from capabilities import load_capabilities
 from cases import select_cases
-from orchestrator import REPO_ROOT, RunStage, SuiteError, preflight, run_case, run_subprocess
+from cli_input import Cancelled, Inputs, QuestionaryAsk, ask_or_fail, no_terminal_error, resolve_inputs
+from orchestrator import CASE_RUNNERS, REPO_ROOT, RunStage, SuiteError, count_lines, preflight, run_case, run_subprocess
 from verdict import build_verdict
 
 RESULTS = REPO_ROOT / "runs" / "results"
@@ -39,9 +45,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="Run the suite against one candidate model")
     run.add_argument("--model", required=True, help="Base model path/HF repo id, or the API model id with --backend api")
-    run.add_argument("--model-id", required=True, help="Stable declared name/version recorded in the verdict")
-    run.add_argument("--capabilities", required=True, help="Path to the candidate's capabilities.json")
-    run.add_argument("--thresholds", required=True, help="Path to the thresholds config JSON")
+    run.add_argument("--model-id", default=None, help="Stable declared name/version recorded in the verdict")
+    run.add_argument("--capabilities", default=None, help="Path to a capabilities.json (instead of --modalities/--languages)")
+    run.add_argument("--modalities", nargs="+", choices=["text", "image"], default=None)
+    run.add_argument("--languages", nargs="+", choices=["en", "th"], default=None)
+    run.add_argument("--thresholds", default=None, help="Thresholds config JSON (default: config/thresholds.json)")
+    run.add_argument("--yes", action="store_true", help="Skip the confirmation before running")
+    run.add_argument("--no-input", action="store_true", help="Never prompt; every input must be given as a flag")
     run.add_argument("--out", default=None, help="Verdict path (default: verdict.json in the run folder)")
     run.add_argument("--backend", choices=["hf", "api"], default="hf")
     run.add_argument("--adapter", default=None, help="Optional PEFT adapter (hf backend only)")
@@ -76,27 +86,59 @@ def wrapper_args(args) -> list[str]:
     return forwarded
 
 
-def run_args_record(args, thresholds_bytes: bytes) -> dict:
+def run_args_record(args, inputs: Inputs, thresholds_bytes: bytes) -> dict:
     return {
         "model": resolve_local(args.model),
         "backend": args.backend,
         "adapter": resolve_local(args.adapter),
         "batch_size": args.batch_size,
         "max_consecutive_failures": args.max_consecutive_failures,
-        "thresholds_file": str(Path(args.thresholds).resolve()),
+        "thresholds_file": str(inputs.thresholds_path),
         "thresholds_sha256": hashlib.sha256(thresholds_bytes).hexdigest(),
+        "capabilities_source": inputs.source,
     }
 
 
-def run(args, stamp: str, run_stage: RunStage = run_subprocess) -> dict:
-    capabilities = load_capabilities(args.capabilities)
+def format_run_summary(args, inputs: Inputs, selection, thresholds: dict) -> str:
+    counts = {case.case_id: count_lines(CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
+    lines = [
+        "About to run:",
+        f"  model        {args.model}  ({args.backend})",
+        f"  record as    {inputs.model_id}",
+        "  tests        " + (", ".join(f"{cid} ({n:,} prompts)" for cid, n in counts.items()) or "(none)"),
+        f"  total        {sum(counts.values()):,} prompts",
+    ]
+    not_attempted = not_attempted_summary(selection)
+    if not_attempted:
+        lines.append("  not tested   " + "; ".join(not_attempted))
+    if thresholds.get("provisional", True):
+        lines.append("  note         thresholds are provisional placeholders; the verdict is not a real decision")
+    return "\n".join(lines)
+
+
+def not_attempted_summary(selection) -> list[str]:
+    entries = selection.declared_scope["not_attempted"]
+    by_reason: dict[str, list[str]] = {}
+    for e in entries:
+        label = e["case_id"] or f"whole {e['gate']} gate"
+        by_reason.setdefault(e["reason"], []).append(label)
+    return [f"{', '.join(labels)} ({reason})" for reason, labels in by_reason.items()]
+
+
+def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, confirm=None) -> dict:
     # Hash the same bytes that are parsed, so an edit during a long run can't mismatch the two.
-    thresholds_bytes = Path(args.thresholds).read_bytes()
+    thresholds_bytes = inputs.thresholds_path.read_bytes()
     thresholds = json.loads(thresholds_bytes.decode("utf-8"))
-    selection = select_cases(capabilities)
+    selection = select_cases(inputs.capabilities)
     preflight(selection, thresholds)
 
-    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", args.model_id)
+    print(format_run_summary(args, inputs, selection, thresholds))
+    if confirm is not None:
+        answer = confirm("Proceed?")
+        if not answer:
+            raise Cancelled()
+
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", inputs.model_id)
     run_dir = RESULTS / f"{safe_id}_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -105,11 +147,11 @@ def run(args, stamp: str, run_stage: RunStage = run_subprocess) -> dict:
         for case in selection.cases
     ]
     verdict = build_verdict(
-        args.model_id,
+        inputs.model_id,
         selection,
         case_results,
         thresholds_provisional=bool(thresholds.get("provisional", True)),
-        run_args=run_args_record(args, thresholds_bytes),
+        run_args=run_args_record(args, inputs, thresholds_bytes),
     )
 
     out = Path(args.out) if args.out else run_dir / "verdict.json"
@@ -119,7 +161,7 @@ def run(args, stamp: str, run_stage: RunStage = run_subprocess) -> dict:
         f"safety={verdict['safety_gate']}, smartness={verdict['smartness_gate']}, admitted={verdict['admitted']}"
         + (" (provisional thresholds)" if verdict["thresholds_provisional"] else "")
     )
-    append_index_row(stamp, args, f"cases: {cases}", outcome, f"{run_dir.relative_to(REPO_ROOT)}/, {out}")
+    append_index_row(stamp, inputs.model_id, f"cases: {cases}", outcome, f"{run_dir.relative_to(REPO_ROOT)}/, {out}")
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
     return verdict
@@ -129,24 +171,48 @@ def _cell(text: str) -> str:
     return str(text).replace("\n", " ").replace("|", "/")
 
 
-def append_index_row(stamp: str, args, detail: str, outcome: str, outputs: str) -> None:
-    cells = [stamp, "safety_suite.py run", f"model-id={args.model_id}; {detail}", outcome, f"runs/logs/*_{stamp}.log", outputs]
+def append_index_row(stamp: str, model_id: str | None, detail: str, outcome: str, outputs: str, logs: str | None = None) -> None:
+    cells = [
+        stamp,
+        "safety_suite.py run",
+        f"model-id={model_id or '(not given)'}; {detail}",
+        outcome,
+        logs if logs is not None else f"runs/logs/*_{stamp}.log",
+        outputs,
+    ]
     row = "| " + " | ".join(_cell(c) for c in cells) + " |\n"
     INDEX.parent.mkdir(parents=True, exist_ok=True)
     with open(INDEX, "a", encoding="utf-8") as f:
         f.write(row)
 
 
-def main(argv: list[str] | None = None, run_stage: RunStage = run_subprocess):
+def main(argv: list[str] | None = None, run_stage: RunStage = run_subprocess, interactive: bool | None = None, ask_factory=QuestionaryAsk):
     args = parse_args(argv)
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.no_input
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    model_id = args.model_id
     try:
-        return run(args, stamp, run_stage=run_stage)
+        inputs = resolve_inputs(args, interactive, ask_factory)
+        model_id = inputs.model_id
+        confirm = None
+        if interactive and not args.yes:
+            try:
+                ask = ask_factory()
+            except Exception as e:
+                raise no_terminal_error(["--yes"], e) from e
+            # Defaults to no, like every yes/no prompt here: a stray Enter must not start a multi-hour run.
+            confirm = lambda message: ask_or_fail(["--yes"], ask.confirm, message, default=False)
+        return run(args, inputs, stamp, run_stage=run_stage, confirm=confirm)
+    except Cancelled:
+        append_index_row(stamp, model_id, "cancelled", "cancelled before running; no verdict", "(none)", logs="(none)")
+        print("Cancelled; nothing was run.")
+        return None
     except SuiteError as e:
-        append_index_row(stamp, args, "suite error", f"suite error: {e}; no verdict", "(none)")
+        append_index_row(stamp, model_id, "suite error", f"suite error: {e}; no verdict", "(none)")
         raise SystemExit(f"Suite error, no verdict produced: {e}")
     except (Exception, KeyboardInterrupt) as e:
-        append_index_row(stamp, args, "error", f"{type(e).__name__}: {e}; no verdict", "(none)")
+        append_index_row(stamp, model_id, "error", f"{type(e).__name__}: {e}; no verdict", "(none)")
         raise
 
 
