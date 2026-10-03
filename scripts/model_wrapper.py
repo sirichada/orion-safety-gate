@@ -16,10 +16,20 @@ Requires: torch, transformers, peft (if --adapter given), bitsandbytes
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
 from hf_model import load_causal_lm, unload
+
+# Exit code for a run stopped by --max-consecutive-failures. Always paired with a
+# <out>.stopped.json sidecar, so a bare 3 from anywhere else isn't mistaken for it.
+STOPPED_NO_ANSWER_EXIT_CODE = 3
+
+
+class StoppedNoAnswer(RuntimeError):
+    """Raised when consecutive batches produce no answer for any prompt."""
+
 
 # Re-exported for backwards compatibility -- callers/scripts that imported
 # load_model from this module directly still work.
@@ -230,16 +240,25 @@ def main():
             processed = len(responses)
             print(f"Generated {processed}/{len(prompts)} ({failed} failed)")
             if consecutive_failed_batches >= args.max_consecutive_failures:
-                raise RuntimeError(
+                raise StoppedNoAnswer(
                     f"Aborting: {consecutive_failed_batches} consecutive batches produced no answer for any prompt "
-                    f"({failed}/{processed} generations raised overall); not producing a verdict over this run."
+                    f"({failed}/{processed} generations raised overall); stopping generation for this case."
                 )
-    except RuntimeError:
+    except RuntimeError as e:
         # Preserve partial output before propagating the abort.
         partial_records = records[: len(responses)]
         for k, (record, response) in enumerate(zip(partial_records, responses)):
             fill_record(k, record, response)
         write_out(partial_records)
+        if isinstance(e, StoppedNoAnswer) and args.out:
+            sidecar = {
+                "reason": str(e),
+                "n_prompts": len(prompts),
+                "n_attempted": len(responses),
+                "n_answered": sum(1 for k in range(len(responses)) if answered(k)),
+                "max_consecutive_failures": args.max_consecutive_failures,
+            }
+            Path(args.out + ".stopped.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
         raise
 
     for k, (record, response) in enumerate(zip(records, responses)):
@@ -271,4 +290,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except StoppedNoAnswer as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(STOPPED_NO_ANSWER_EXIT_CODE)
