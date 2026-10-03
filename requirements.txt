@@ -8,3 +8,4 @@ pyarrow
 protobuf
 httpx
 pytest
+questionary
