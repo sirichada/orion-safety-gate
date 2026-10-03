@@ -66,6 +66,10 @@ def parse_capabilities(data: dict) -> Capabilities:
     modalities = _validate_field(data, "declared_modalities", ALLOWED_MODALITIES)
     languages = _validate_field(data, "declared_languages", ALLOWED_LANGUAGES)
 
+    # Every check the suite runs sends text prompts, so a model must accept text to be tested at all.
+    if "text" not in modalities:
+        raise CapabilitiesError(f"'declared_modalities' must include 'text', got {sorted(modalities)}")
+
     return Capabilities(declared_modalities=modalities, declared_languages=languages)
 
 
