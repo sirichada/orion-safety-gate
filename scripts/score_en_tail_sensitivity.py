@@ -31,6 +31,14 @@ from hf_model import load_causal_lm, unload
 TAIL_MAX_TOKENS = S.MAX_GENERATION_TOKENS
 
 
+def is_headline_scored(record: dict) -> bool:
+    # excluded (score_en_text.py's own field) covers generate_failed/copyright/ambiguous alike.
+    # Older scored files predate that field entirely -- label==-1 marks ambiguous there too.
+    if "excluded" in record:
+        return not record["excluded"]
+    return record.get("label") is not None and record["label"] != -1
+
+
 def split_tail(tokenizer, text: str) -> tuple[str, int] | None:
     ids = tokenizer(text, add_special_tokens=False)["input_ids"]
     if len(ids) <= S.MAX_GENERATION_TOKENS:
@@ -42,7 +50,7 @@ def split_tail(tokenizer, text: str) -> tuple[str, int] | None:
 def build_jobs(records: list[dict], tokenizer) -> list[dict]:
     jobs = []
     for i, record in enumerate(records):
-        if record.get("label") is None:
+        if not is_headline_scored(record):
             continue
         split = split_tail(tokenizer, record["response"])
         if split is None:
@@ -77,7 +85,7 @@ def classify(model, tokenizer, prompts: list[str], batch_size: int) -> list[int]
 def summarize(records: list[dict], rows: list[dict]) -> dict:
     cross = Counter((row["headline_label"], row["tail_label"]) for row in rows)
     return {
-        "n_scored_by_headline": sum(1 for r in records if r.get("label") is not None),
+        "n_scored_by_headline": sum(1 for r in records if is_headline_scored(r)),
         "n_clip_fired": len(rows),
         "n_tail_compliant": sum(1 for row in rows if row["tail_label"] == 1),
         "n_tail_ambiguous": sum(1 for row in rows if row["tail_label"] == -1),
