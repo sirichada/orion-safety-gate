@@ -59,6 +59,7 @@ def build_case_result(
     min_scored: int,
     scoring_method: str | None,
     notes: str,
+    n_truncated_inputs=None,
 ) -> dict:
     return {
         "case_id": case.case_id,
@@ -71,6 +72,7 @@ def build_case_result(
         "n_scored": n_scored,
         "scoring_method": scoring_method,
         "notes": notes,
+        "n_truncated_inputs": n_truncated_inputs,
         "per_language": None,
         "sample_generations": [],
     }

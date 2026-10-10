@@ -23,7 +23,15 @@ def quantization_config_4bit():
     )
 
 
-def load_causal_lm(model_path: str, adapter_path: str | None = None, use_4bit: bool = True):
+def load_causal_lm(
+    model_path: str,
+    adapter_path: str | None = None,
+    use_4bit: bool = True,
+    *,
+    precision: str | None = None,
+    revision: str | None = None,
+    adapter_revision: str | None = None,
+):
     """Loads a base HF causal-LM checkpoint, optionally with a PEFT adapter
     attached on top. Returns (model, tokenizer).
 
@@ -31,12 +39,35 @@ def load_causal_lm(model_path: str, adapter_path: str | None = None, use_4bit: b
     HarmBench's classifier (score_en_text.py), which is a prompted, instruction-
     tuned Llama-2 -- not a plain sequence classifier -- so it loads the same way
     as any other causal LM.
+
+    precision selects how the weights are loaded: "4bit" (bitsandbytes NF4),
+    "full" (bfloat16, set explicitly), or "as_published" (the checkpoint's own
+    stored dtype and quantization, no bitsandbytes and no upcast). A checkpoint
+    that ships quantized only loads as_published. precision=None keeps the
+    use_4bit behaviour that the classifier loaders rely on. revision and
+    adapter_revision pin the model/tokenizer and the adapter to a hub commit.
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-    quantization_config = quantization_config_4bit() if use_4bit else None
+    from run_config import check_precision
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    load_kwargs: dict = {"device_map": "auto"}
+    if revision:
+        load_kwargs["revision"] = revision
+    if precision is None:
+        load_kwargs["quantization_config"] = quantization_config_4bit() if use_4bit else None
+    else:
+        config = AutoConfig.from_pretrained(model_path, revision=revision) if revision else AutoConfig.from_pretrained(model_path)
+        check_precision(precision, getattr(config, "quantization_config", None))
+        if precision == "4bit":
+            load_kwargs["quantization_config"] = quantization_config_4bit()
+        elif precision == "full":
+            load_kwargs["torch_dtype"] = torch.bfloat16
+        else:
+            load_kwargs["torch_dtype"] = "auto"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, **({"revision": revision} if revision else {}))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     # Left-pad for batched causal-LM generation -- right padding (the HF default)
@@ -44,16 +75,14 @@ def load_causal_lm(model_path: str, adapter_path: str | None = None, use_4bit: b
     # a single input_len below would decode garbage for every shorter sequence.
     tokenizer.padding_side = "left"
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        quantization_config=quantization_config,
-        device_map="auto",
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
 
     if adapter_path:
         from peft import PeftModel
 
-        model = PeftModel.from_pretrained(model, adapter_path)
+        model = PeftModel.from_pretrained(
+            model, adapter_path, **({"revision": adapter_revision} if adapter_revision else {})
+        )
 
     model.eval()
     return model, tokenizer

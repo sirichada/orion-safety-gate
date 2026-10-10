@@ -8,6 +8,9 @@ model_wrapper.STOPPED_NO_ANSWER_EXIT_CODE and leaves a <responses>.stopped.json
 sidecar; that case is recorded as insufficient_data and scoring is skipped.
 Any other failure, including that exit code without its sidecar, is a suite
 error and stops the whole run.
+
+Every generation stage also leaves <responses>.run_config.json (see run_config.py);
+a case whose generation finished or stopped without one is a suite error.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import run_config
 from cases import CaseSpec, Selection
 from verdict import build_case_result
 
@@ -106,6 +110,17 @@ def preflight(selection: Selection, thresholds: dict) -> None:
         raise SuiteError("Preflight failed:\n  " + "\n  ".join(problems))
 
 
+def responses_path(run_dir: Path, case: CaseSpec) -> Path:
+    return run_dir / f"responses_{case.case_id}.jsonl"
+
+
+def read_run_config(responses: Path, case_id: str) -> dict:
+    try:
+        return run_config.read_stage_report(responses)
+    except ValueError as e:
+        raise SuiteError(f"{case_id}: {e}") from e
+
+
 def _aggregate(scorer: str, records: list[dict]) -> dict:
     module = __import__(scorer)
     return module.aggregate(records)
@@ -122,10 +137,12 @@ def run_case(
     runner = CASE_RUNNERS[case.case_id]
     entry = thresholds["cases"][case.case_id]
     stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
-    responses = run_dir / f"responses_{case.case_id}.jsonl"
+    responses = responses_path(run_dir, case)
     scored = run_dir / f"scored_{case.case_id}.jsonl"
     sidecar = Path(str(responses) + ".stopped.json")
     n_prompts = count_lines(runner.prompts)
+
+    n_truncated_inputs = None
 
     def result(score, n_scored, notes, scoring_method):
         return build_case_result(
@@ -137,11 +154,13 @@ def run_case(
             min_scored=entry["min_scored"],
             scoring_method=scoring_method,
             notes=notes,
+            n_truncated_inputs=n_truncated_inputs,
         )
 
     gen_cmd = [sys.executable, "model_wrapper.py", "--prompts", str(runner.prompts), "--out", str(responses), *wrapper_args]
     code = run_stage(gen_cmd, LOGS / f"model_wrapper_{case.case_id}_{stamp}.log")
     if code == STOPPED_NO_ANSWER_EXIT_CODE and sidecar.exists():
+        n_truncated_inputs = read_run_config(responses, case.case_id)["n_truncated_inputs"]
         stop = json.loads(sidecar.read_text(encoding="utf-8"))
         notes = (
             f"stopped before scoring: {stop['reason']} "
@@ -150,6 +169,7 @@ def run_case(
         return result(None, 0, notes, None)
     if code != 0:
         raise SuiteError(f"{case.case_id}: generation exited with code {code}")
+    n_truncated_inputs = read_run_config(responses, case.case_id)["n_truncated_inputs"]
 
     code = run_stage(
         [sys.executable, f"{runner.scorer}.py", "--responses", str(responses), "--out", str(scored)],

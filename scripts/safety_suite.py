@@ -29,16 +29,28 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import run_config
 from cases import REGISTRY, OnlyError, select_cases
 from cli_input import Cancelled, Inputs, QuestionaryAsk, ask_or_fail, no_terminal_error, resolve_inputs
-from orchestrator import CASE_RUNNERS, REPO_ROOT, RunStage, SuiteError, count_lines, preflight, run_case, run_subprocess
+from orchestrator import (
+    CASE_RUNNERS,
+    REPO_ROOT,
+    RunStage,
+    SuiteError,
+    count_lines,
+    preflight,
+    read_run_config,
+    responses_path,
+    run_case,
+    run_subprocess,
+)
 from verdict import build_verdict
 
 RESULTS = REPO_ROOT / "runs" / "results"
 INDEX = REPO_ROOT / "runs" / "_index.md"
 
 # Forwarded explicitly so every verdict records the N that applied.
-DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+DEFAULT_MAX_CONSECUTIVE_FAILURES = run_config.DEFAULTS["max_consecutive_failures"]
 
 
 def parse_only(value: str) -> tuple[str, ...]:
@@ -76,7 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", default=None, help="Verdict path (default: verdict.json in the run folder)")
     run.add_argument("--backend", choices=["hf", "api"], default="hf")
     run.add_argument("--adapter", default=None, help="Optional PEFT adapter (hf backend only)")
-    run.add_argument("--batch-size", type=int, default=None)
+    run.add_argument("--batch-size", type=int, default=run_config.DEFAULTS["batch_size"])
+    run.add_argument(
+        "--precision",
+        choices=run_config.PRECISIONS,
+        default=run_config.DEFAULTS["precision"],
+        help="4bit = bitsandbytes NF4 (default); full = bfloat16; as_published = the checkpoint's own "
+        "dtype and quantization, required for pre-quantized checkpoints. hf backend only",
+    )
+    run.add_argument("--model-revision", default=None, help="Hub branch/tag/commit for --model (default: main, resolved once)")
+    run.add_argument("--adapter-revision", default=None, help="Hub branch/tag/commit for --adapter (default: main, resolved once)")
     run.add_argument("--max-consecutive-failures", type=int, default=DEFAULT_MAX_CONSECUTIVE_FAILURES)
     return parser
 
@@ -86,6 +107,23 @@ def parse_args(argv: list[str] | None = None):
     args = parser.parse_args(argv)
     if args.max_consecutive_failures < 1:
         parser.error("--max-consecutive-failures must be >= 1")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be >= 1")
+    if args.adapter_revision and not args.adapter:
+        parser.error("--adapter-revision needs --adapter")
+    if args.backend == "api":
+        hf_only = [
+            flag
+            for flag, given in (
+                ("--adapter", args.adapter),
+                ("--model-revision", args.model_revision),
+                ("--adapter-revision", args.adapter_revision),
+                ("--precision", args.precision != run_config.DEFAULTS["precision"]),
+            )
+            if given
+        ]
+        if hf_only:
+            parser.error(f"{', '.join(hf_only)} apply only to the hf backend")
     return args
 
 
@@ -97,36 +135,117 @@ def resolve_local(value: str | None) -> str | None:
     return str(Path(value).resolve()) if Path(value).exists() else value
 
 
-def wrapper_args(args) -> list[str]:
-    forwarded = ["--model", resolve_local(args.model), "--backend", args.backend]
+def wrapper_args(args, revisions: dict | None = None) -> list[str]:
+    """Every protocol, hardware and per-model value is forwarded, so no wrapper default is relied on."""
+    revisions = revisions or {}
+    d = run_config.DEFAULTS
+    forwarded = [
+        "--model", resolve_local(args.model),
+        "--backend", args.backend,
+        "--batch-size", str(args.batch_size),
+        "--max-consecutive-failures", str(args.max_consecutive_failures),
+        "--temperature", str(run_config.PROTOCOL["temperature"]),
+        "--top-p", str(run_config.PROTOCOL["top_p"]),
+        "--max-new-tokens", str(d["max_new_tokens"]),
+    ]
     if args.adapter:
         forwarded += ["--adapter", resolve_local(args.adapter)]
-    if args.batch_size is not None:
-        forwarded += ["--batch-size", str(args.batch_size)]
-    forwarded += ["--max-consecutive-failures", str(args.max_consecutive_failures)]
+    if args.backend == "hf":
+        forwarded += ["--precision", args.precision, "--max-input-tokens", str(d["max_input_tokens"])]
+        if revisions.get("model"):
+            forwarded += ["--model-revision", revisions["model"]]
+        if revisions.get("adapter"):
+            forwarded += ["--adapter-revision", revisions["adapter"]]
     return forwarded
 
 
-def run_args_record(args, inputs: Inputs, thresholds_bytes: bytes) -> dict:
+def forwarded_values(args, revisions: dict | None = None) -> dict:
+    """What a stage's report must say it used, for the arguments wrapper_args forwards."""
+    revisions = revisions or {}
+    d = run_config.DEFAULTS
+    values = {
+        "backend": args.backend,
+        "model": resolve_local(args.model),
+        "adapter": resolve_local(args.adapter),
+        "batch_size": args.batch_size,
+        "max_consecutive_failures": args.max_consecutive_failures,
+        "temperature": run_config.PROTOCOL["temperature"],
+        "top_p": run_config.PROTOCOL["top_p"],
+        "max_new_tokens": d["max_new_tokens"],
+    }
+    if args.backend == "hf":
+        values.update(
+            precision=args.precision,
+            max_input_tokens=d["max_input_tokens"],
+            model_revision=revisions.get("model"),
+            adapter_revision=revisions.get("adapter"),
+        )
+    return values
+
+
+def resolve_run_revisions(args) -> dict:
+    """Model and adapter commits, resolved once before any case so every case loads the same weights.
+
+    A local path has no commit and is left to be identified by its files. The api backend has none.
+    """
+    if args.backend != "hf":
+        return {"model": None, "adapter": None}
+    found = {}
+    try:
+        for key, repo, revision in (
+            ("model", args.model, args.model_revision),
+            ("adapter", args.adapter, args.adapter_revision),
+        ):
+            if repo is None:
+                found[key] = None
+                continue
+            resolved = run_config.resolve_revision(repo, revision)
+            found[key] = resolved if isinstance(resolved, str) else None
+    except run_config.RevisionError as e:
+        raise SuiteError(str(e)) from e
+    return found
+
+
+def build_run_args(
+    args, inputs: Inputs, thresholds_bytes: bytes, baseline: dict, flags: list[dict], prompt_sets: dict
+) -> dict:
+    provenance = baseline["provenance"]
     return {
         "model": resolve_local(args.model),
         "backend": args.backend,
         "adapter": resolve_local(args.adapter),
+        "adapter_revision": provenance["adapter_revision"],
+        "model_revision": provenance["model_revision"],
         "batch_size": args.batch_size,
         "max_consecutive_failures": args.max_consecutive_failures,
+        "precision": baseline["precision"],
         "thresholds_file": str(inputs.thresholds_path),
         "thresholds_sha256": hashlib.sha256(thresholds_bytes).hexdigest(),
         "capabilities_source": inputs.source,
         "only": list(args.only) if args.only is not None else None,
+        "protocol": dict(run_config.PROTOCOL),
+        "per_model": baseline["per_model"],
+        "model_input": baseline["model_input"],
+        "provenance": {
+            "suite": run_config.git_state(REPO_ROOT),
+            "libraries": provenance["libraries"],
+            "gpu": provenance["gpu"],
+            "prompt_sets": prompt_sets,
+            "model_files": provenance["model_files"],
+            "adapter_files": provenance["adapter_files"],
+            "api": provenance["api"],
+        },
+        "config_mismatches": flags,
     }
 
 
-def format_run_summary(args, inputs: Inputs, selection, thresholds: dict) -> str:
+def format_run_summary(args, inputs: Inputs, selection, thresholds: dict, revisions: dict | None = None) -> str:
     counts = {case.case_id: count_lines(CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
     lines = [
         "About to run:",
         f"  model        {args.model}  ({args.backend})",
         f"  record as    {inputs.model_id}",
+        f"  settings     {settings_line(args, revisions or {})}",
         "  tests        " + (", ".join(f"{cid} ({n:,} prompts)" for cid, n in counts.items()) or "(none)"),
         f"  total        {sum(counts.values()):,} prompts",
     ]
@@ -139,6 +258,39 @@ def format_run_summary(args, inputs: Inputs, selection, thresholds: dict) -> str
     if thresholds.get("provisional", True):
         lines.append("  note         thresholds are provisional placeholders; the verdict is not a real decision")
     return "\n".join(lines)
+
+
+def settings_line(args, revisions: dict) -> str:
+    d = run_config.DEFAULTS
+    parts = [f"batch {args.batch_size}", f"max_new_tokens {d['max_new_tokens']}", "greedy"]
+    if args.backend == "hf":
+        parts.insert(0, f"precision {args.precision}")
+        parts.append(f"max_input_tokens {d['max_input_tokens']}")
+        if revisions.get("model"):
+            parts.append(f"model@{revisions['model'][:12]}")
+        if args.adapter and revisions.get("adapter"):
+            parts.append(f"adapter@{revisions['adapter'][:12]}")
+    return ", ".join(parts)
+
+
+def collect_run_config(selection, run_dir: Path, args, revisions: dict) -> tuple[dict, list[dict]]:
+    """Reads every case's stage report, checks it against what was forwarded, and merges them.
+
+    A difference in anything that defines what was tested stops the run without a verdict.
+    """
+    expected = forwarded_values(args, revisions)
+    reports = {}
+    for case in selection.cases:
+        report = read_run_config(responses_path(run_dir, case), case.case_id)
+        problems = run_config.check_forwarded(expected, report)
+        if problems:
+            raise SuiteError(f"{case.case_id}: the wrapper did not use the forwarded settings: " + "; ".join(problems))
+        reports[case.case_id] = report
+    baseline, errors, flags = run_config.merge_reports(reports)
+    if errors:
+        detail = "; ".join(f"{e['field']} differs between cases ({json.dumps(e['values'], default=str)[:300]})" for e in errors)
+        raise SuiteError(f"cases ran with different configurations, so the verdict would describe two tested things: {detail}")
+    return baseline, flags
 
 
 def not_attempted_summary(selection) -> list[str]:
@@ -166,7 +318,8 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         raise SuiteError(str(e)) from e
     preflight(selection, thresholds)
 
-    print(format_run_summary(args, inputs, selection, thresholds))
+    revisions = resolve_run_revisions(args)
+    print(format_run_summary(args, inputs, selection, thresholds, revisions))
     if confirm is not None:
         answer = confirm("Proceed?")
         if not answer:
@@ -177,15 +330,17 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     run_dir.mkdir(parents=True, exist_ok=False)
 
     case_results = [
-        run_case(case, run_dir, wrapper_args(args), thresholds, run_stage=run_stage, timestamp=stamp)
+        run_case(case, run_dir, wrapper_args(args, revisions), thresholds, run_stage=run_stage, timestamp=stamp)
         for case in selection.cases
     ]
+    baseline, flags = collect_run_config(selection, run_dir, args, revisions)
+    prompt_sets = run_config.prompt_set_hashes({case.case_id: CASE_RUNNERS[case.case_id].prompts for case in selection.cases})
     verdict = build_verdict(
         inputs.model_id,
         selection,
         case_results,
         thresholds_provisional=bool(thresholds.get("provisional", True)),
-        run_args=run_args_record(args, inputs, thresholds_bytes),
+        run_args=build_run_args(args, inputs, thresholds_bytes, baseline, flags, prompt_sets),
     )
 
     out = Path(args.out) if args.out else run_dir / "verdict.json"

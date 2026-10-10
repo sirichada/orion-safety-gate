@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 import orchestrator
+import run_config
 from capabilities import parse_capabilities
+from conftest import stage_report_for
 from cases import REGISTRY, select_cases
 from orchestrator import STOPPED_NO_ANSWER_EXIT_CODE, CaseRunner, SuiteError, preflight, run_case
 
@@ -25,8 +27,9 @@ def th_prompts(tmp_path, monkeypatch):
 class FakeStages:
     """Stands in for the subprocesses: records commands and writes canned outputs."""
 
-    def __init__(self, gen_code=0, sidecar=None, scored_labels=(1, 0, 0, 0)):
+    def __init__(self, gen_code=0, sidecar=None, scored_labels=(1, 0, 0, 0), report=True, n_truncated=0):
         self.gen_code, self.sidecar, self.scored_labels = gen_code, sidecar, scored_labels
+        self.report, self.n_truncated = report, n_truncated
         self.calls = []
 
     def __call__(self, cmd, log_path):
@@ -34,6 +37,8 @@ class FakeStages:
         out = Path(cmd[cmd.index("--out") + 1])
         if cmd[1] == "model_wrapper.py":
             out.write_text("{}\n", encoding="utf-8")
+            if self.report:
+                run_config.write_stage_report(out, stage_report_for(cmd, n_truncated_inputs=self.n_truncated))
             if self.sidecar is not None:
                 Path(str(out) + ".stopped.json").write_text(json.dumps(self.sidecar), encoding="utf-8")
             return self.gen_code
@@ -110,7 +115,10 @@ def test_scorer_modules_import_without_torch():
     # Only meaningful where torch is installed; elsewhere the import can't happen at all.
     pytest.importorskip("torch")
     # The orchestrator imports the scorers for aggregate(); that must not pull in the model stack.
-    code = "import sys; import score_en_text, score_th_text, score_over_refusal; sys.exit(1 if 'torch' in sys.modules else 0)"
+    code = (
+        "import sys; import score_en_text, score_th_text, score_over_refusal, run_config; "
+        "sys.exit(1 if 'torch' in sys.modules else 0)"
+    )
     scripts = Path(__file__).resolve().parent.parent / "scripts"
     assert subprocess.run([sys.executable, "-c", code], cwd=scripts).returncode == 0
 
@@ -118,3 +126,52 @@ def test_scorer_modules_import_without_torch():
 def test_every_implemented_case_has_a_runner():
     missing = [c.case_id for c in REGISTRY if c.implemented and c.case_id not in orchestrator.CASE_RUNNERS]
     assert missing == []
+
+
+def test_case_result_carries_the_truncated_input_count(tmp_path, th_prompts):
+    stages = FakeStages(n_truncated=3)
+    result = run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=stages, timestamp="t")
+    assert result["n_truncated_inputs"] == 3
+
+
+def test_stopped_case_still_reports_truncated_inputs(tmp_path, th_prompts):
+    sidecar = {"reason": "r", "n_prompts": 4, "n_attempted": 3, "n_answered": 0}
+    stages = FakeStages(gen_code=STOPPED_NO_ANSWER_EXIT_CODE, sidecar=sidecar, n_truncated=2)
+    result = run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=stages, timestamp="t")
+    assert result["n_truncated_inputs"] == 2
+
+
+def test_missing_run_config_is_a_suite_error(tmp_path, th_prompts):
+    stages = FakeStages(report=False)
+    with pytest.raises(SuiteError, match="th_text.*run configuration"):
+        run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=stages, timestamp="t")
+    assert not scorer_was_called(stages)
+
+
+def test_unparsable_run_config_is_a_suite_error(tmp_path, th_prompts):
+    class Corrupt(FakeStages):
+        def __call__(self, cmd, log_path):
+            code = super().__call__(cmd, log_path)
+            if cmd[1] == "model_wrapper.py":
+                run_config.sidecar_path(cmd[cmd.index("--out") + 1]).write_text("{not json", encoding="utf-8")
+            return code
+
+    with pytest.raises(SuiteError, match="not valid JSON"):
+        run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=Corrupt(), timestamp="t")
+
+
+def test_responses_path_matches_the_stage_output(tmp_path, th_prompts):
+    stages = FakeStages()
+    run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=stages, timestamp="t")
+    assert run_config.sidecar_path(orchestrator.responses_path(tmp_path, TH_TEXT)).exists()
+
+
+def test_suite_modules_import_without_the_model_stack():
+    # Holds with or without torch installed: the suite process must never load the model stack.
+    code = (
+        "import sys; import safety_suite, orchestrator, run_config, verdict, cases; "
+        "bad = [m for m in ('torch', 'transformers', 'peft', 'bitsandbytes', 'huggingface_hub') if m in sys.modules]; "
+        "sys.exit(1 if bad else 0)"
+    )
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    assert subprocess.run([sys.executable, "-c", code], cwd=scripts).returncode == 0

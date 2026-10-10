@@ -11,7 +11,11 @@ Usage:
         --adapter path/to/backdoorllm/adapter --prompts prompts.jsonl
 
 Requires: torch, transformers, peft (if --adapter given), bitsandbytes
-(if --4bit, the default).
+(if --precision 4bit, the default).
+
+Before generating, writes <out>.run_config.json: the values this process actually
+ran with, what the chat template wraps around a prompt, and where the weights came
+from (see run_config.py).
 """
 
 import argparse
@@ -20,6 +24,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import run_config
 from hf_model import load_causal_lm, unload
 
 # Exit code for a run stopped by --max-consecutive-failures. Always paired with a
@@ -49,6 +54,25 @@ def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_tem
     """
     import torch
 
+    def render(prompts: list[str], chat_template: str | None) -> list[str]:
+        if apply_chat_template and (chat_template or tokenizer.chat_template):
+            template = chat_template if chat_template is not None else tokenizer.chat_template
+            return [
+                tokenizer.apply_chat_template(
+                    [{"role": "user", "content": p}],
+                    chat_template=template,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                for p in prompts
+            ]
+        return prompts
+
+    def count_truncated(prompts: list[str], chat_template: str | None = None) -> int:
+        """Prompts whose tokenized length exceeds max_input_tokens, i.e. that generate() cuts short."""
+        encoded = tokenizer(render(prompts, chat_template), truncation=False)["input_ids"]
+        return sum(1 for ids in encoded if len(ids) > max_input_tokens)
+
     def generate(
         prompts: list[str],
         max_new_tokens: int,
@@ -60,17 +84,7 @@ def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_tem
         if seed is not None:
             torch.manual_seed(seed)
 
-        if apply_chat_template and (chat_template or tokenizer.chat_template):
-            template = chat_template if chat_template is not None else tokenizer.chat_template
-            prompts = [
-                tokenizer.apply_chat_template(
-                    [{"role": "user", "content": p}],
-                    chat_template=template,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-                for p in prompts
-            ]
+        prompts = render(prompts, chat_template)
         inputs = tokenizer(
             prompts,
             return_tensors="pt",
@@ -92,7 +106,93 @@ def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_tem
         completions = output_ids[:, input_len:]
         return tokenizer.batch_decode(completions, skip_special_tokens=True)
 
+    generate.count_truncated = count_truncated
     return generate
+
+
+def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
+    """The run_config.json content: effective values, template record and provenance."""
+    api = args.backend == "api"
+    args_used = {
+        "backend": args.backend,
+        "model": args.model,
+        "adapter": args.adapter,
+        "batch_size": args.batch_size,
+        "max_consecutive_failures": args.max_consecutive_failures,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "max_new_tokens": args.max_new_tokens,
+        "model_revision": args.model_revision,
+        "adapter_revision": args.adapter_revision,
+    }
+    if api:
+        import api_model
+
+        server_side = run_config.unavailable("server-side chat template")
+        return run_config.build_stage_report(
+            args=args_used,
+            precision=run_config.unavailable("api backend: weights are server-side"),
+            model_input={"chat_template": server_side},
+            per_model={
+                "max_new_tokens": args.max_new_tokens,
+                "max_input_tokens": run_config.unavailable("server-side limit"),
+                "thinking": {"template_parameters": server_side, "passed": {}},
+            },
+            provenance={
+                "model_revision": run_config.unavailable("api backend"),
+                "adapter_revision": None,
+                "model_files": None,
+                "adapter_files": None,
+                "libraries": run_config.library_versions(("httpx",)),
+                "gpu": run_config.unavailable("api backend"),
+                "api": {
+                    "base_url": api_model.BASE_URL,
+                    "reported_model": run_config.unavailable("deferred"),
+                    "system_fingerprint": run_config.unavailable("deferred"),
+                },
+            },
+            n_truncated_inputs=run_config.unavailable("server-side limit"),
+        )
+
+    args_used.update(precision=args.precision, max_input_tokens=args.max_input_tokens)
+    template = args.chat_template if args.chat_template is not None else tokenizer.chat_template
+    source = "override" if args.chat_template is not None else "tokenizer"
+
+    def identify(path: str, revision: str | None):
+        if Path(path).exists():
+            return run_config.unavailable("local path"), run_config.local_checkpoint_identity(path)
+        resolved = revision or run_config.HUB.cached_commit(path)
+        return (resolved or run_config.unavailable("revision not resolved")), None
+
+    model_revision, model_files = identify(args.model, args.model_revision)
+    adapter_revision, adapter_files = (None, None)
+    if args.adapter:
+        adapter_revision, adapter_files = identify(args.adapter, args.adapter_revision)
+
+    return run_config.build_stage_report(
+        args=args_used,
+        precision=run_config.describe_precision(args.precision, model),
+        model_input={
+            "chat_template": run_config.render_template_record(
+                tokenizer, template, not args.no_chat_template, source
+            )
+        },
+        per_model={
+            "max_new_tokens": args.max_new_tokens,
+            "max_input_tokens": args.max_input_tokens,
+            "thinking": {"template_parameters": run_config.template_parameters(template), "passed": {}},
+        },
+        provenance={
+            "model_revision": model_revision,
+            "adapter_revision": adapter_revision,
+            "model_files": model_files,
+            "adapter_files": adapter_files,
+            "libraries": run_config.library_versions(),
+            "gpu": run_config.gpu_info(),
+            "api": None,
+        },
+        n_truncated_inputs=n_truncated_inputs,
+    )
 
 
 def main():
@@ -103,7 +203,16 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
-    parser.add_argument("--no-4bit", action="store_true", help="Disable 4-bit quantization")
+    parser.add_argument(
+        "--precision",
+        choices=run_config.PRECISIONS,
+        default=run_config.DEFAULTS["precision"],
+        help="4bit = bitsandbytes NF4; full = bfloat16; as_published = the checkpoint's own dtype/quantization "
+        "(required for pre-quantized checkpoints)",
+    )
+    parser.add_argument("--no-4bit", action="store_true", help="Alias for --precision full")
+    parser.add_argument("--model-revision", default=None, help="Hub commit to load the model and tokenizer at")
+    parser.add_argument("--adapter-revision", default=None, help="Hub commit to load the adapter at")
     parser.add_argument(
         "--max-consecutive-failures",
         type=int,
@@ -111,7 +220,7 @@ def main():
         help="Abort after this many batches in a row that produced no answer for any prompt, even after per-prompt retry",
     )
     parser.add_argument("--no-chat-template", action="store_true", help="Skip the tokenizer's chat template, send raw prompts")
-    parser.add_argument("--batch-size", type=int, default=8, help="Prompts per generate() call -- the full HarmBench/ThaiSafetyBench prompt sets (400/1,889) would OOM a 12GB GPU in one call")
+    parser.add_argument("--batch-size", type=int, default=run_config.DEFAULTS["batch_size"], help="Prompts per generate() call -- the full HarmBench/ThaiSafetyBench prompt sets (400/1,889) would OOM a 12GB GPU in one call")
     parser.add_argument("--max-input-tokens", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=None, help="Seed for reproducible sampling")
     parser.add_argument(
@@ -127,22 +236,54 @@ def main():
     args = parser.parse_args()
     if args.max_consecutive_failures < 1:
         parser.error("--max-consecutive-failures must be >= 1")
+    if args.no_4bit:
+        if args.precision not in (run_config.DEFAULTS["precision"], "full"):
+            parser.error("--no-4bit conflicts with --precision")
+        args.precision = "full"
+    if args.adapter_revision and not args.adapter:
+        parser.error("--adapter-revision needs --adapter")
 
     if args.backend == "api":
-        if args.adapter or args.no_4bit or args.no_chat_template or args.chat_template is not None or args.max_input_tokens != 2048:
-            parser.error("--adapter/--no-4bit/--no-chat-template/--chat-template/--max-input-tokens are hf-only")
+        if (
+            args.adapter
+            or args.precision != run_config.DEFAULTS["precision"]
+            or args.model_revision
+            or args.adapter_revision
+            or args.no_chat_template
+            or args.chat_template is not None
+            or args.max_input_tokens != run_config.DEFAULTS["max_input_tokens"]
+        ):
+            parser.error(
+                "--adapter/--precision/--no-4bit/--model-revision/--adapter-revision/--no-chat-template/"
+                "--chat-template/--max-input-tokens are hf-only"
+            )
         from api_model import make_api_generate
 
         model = tokenizer = None
         generate = make_api_generate(args.model, max_workers=args.batch_size)
     else:
-        model, tokenizer = load_model(args.model, args.adapter, use_4bit=not args.no_4bit)
+        model, tokenizer = load_model(
+            args.model,
+            args.adapter,
+            precision=args.precision,
+            revision=args.model_revision,
+            adapter_revision=args.adapter_revision,
+        )
         generate = make_generate(
             model, tokenizer, max_input_tokens=args.max_input_tokens, apply_chat_template=not args.no_chat_template
         )
 
     records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]
     prompts = [r["model_input"] for r in records]
+
+    # Written before generating, so a stopped or killed run still states what it was run with.
+    if args.out:
+        n_truncated = (
+            run_config.unavailable("server-side limit")
+            if args.backend == "api"
+            else generate.count_truncated(prompts, args.chat_template)
+        )
+        run_config.write_stage_report(args.out, build_report(args, model, tokenizer, n_truncated))
 
     def write_out(records_to_write: list[dict]) -> None:
         if args.out:
