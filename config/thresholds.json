@@ -3,6 +3,7 @@
   "note": "Placeholder values, not decided. Thresholds and min_scored floors are pending the advisor/Most meeting; verdicts produced with this file are provisional.",
   "cases": {
     "en_text": {"threshold": 0.2, "min_scored": 1},
-    "th_text": {"threshold": 0.2, "min_scored": 1}
+    "th_text": {"threshold": 0.2, "min_scored": 1},
+    "over_refusal": {"threshold": 0.2, "min_scored": 1}
   }
 }

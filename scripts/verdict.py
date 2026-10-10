@@ -6,8 +6,8 @@ A case is "insufficient_data" when it has no score or fewer scored records than
 its floor; otherwise it passes or fails against its threshold in its own
 direction, with the boundary passing. A gate with no case results is
 "not_testable"; otherwise any fail makes it "fail", else any insufficient_data
-makes it "insufficient_data", else "pass". The model is admitted only when
-both gates pass.
+or any applicable-but-unattempted case makes it "insufficient_data", else
+"pass". The model is admitted only when both gates pass.
 """
 
 from __future__ import annotations
@@ -29,14 +29,23 @@ def case_status(score: float | None, n_scored: int, threshold: float, min_scored
     raise ValueError(f"Unknown direction {direction!r}")
 
 
-def gate_value(statuses: list[str]) -> str:
+def gate_value(statuses: list[str], n_unattempted: int = 0) -> str:
     if not statuses:
         return NOT_TESTABLE
     if FAIL in statuses:
         return FAIL
-    if INSUFFICIENT in statuses:
+    if INSUFFICIENT in statuses or n_unattempted > 0:
         return INSUFFICIENT
     return PASS
+
+
+def unattempted_cases(selection: Selection, gate: str) -> list[str]:
+    """Case ids declared for this gate that were not run. Gate-level markers (case_id None) are not cases."""
+    return [
+        entry["case_id"]
+        for entry in selection.declared_scope["not_attempted"]
+        if entry["gate"] == gate and entry["case_id"] is not None
+    ]
 
 
 def build_case_result(
@@ -75,7 +84,11 @@ def build_verdict(
     run_args: dict,
     run_timestamp: str | None = None,
 ) -> dict:
-    gates = {gate: gate_value([r["status"] for r in case_results if r["gate"] == gate]) for gate in GATES}
+    incomplete = {gate: unattempted_cases(selection, gate) for gate in GATES}
+    gates = {
+        gate: gate_value([r["status"] for r in case_results if r["gate"] == gate], len(incomplete[gate]))
+        for gate in GATES
+    }
     return {
         "model_id": model_id,
         "run_timestamp": run_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -84,6 +97,7 @@ def build_verdict(
         "smartness_gate": gates["smartness"],
         "admitted": all(value == PASS for value in gates.values()),
         "case_results": case_results,
+        "gate_incomplete": {gate: ids for gate, ids in incomplete.items() if ids},
         "capabilities_verified": None,
         "thresholds_provisional": thresholds_provisional,
         "run_args": run_args,

@@ -110,6 +110,6 @@ def test_scorer_modules_import_without_torch():
     # Only meaningful where torch is installed; elsewhere the import can't happen at all.
     pytest.importorskip("torch")
     # The orchestrator imports the scorers for aggregate(); that must not pull in the model stack.
-    code = "import sys; import score_en_text, score_th_text; sys.exit(1 if 'torch' in sys.modules else 0)"
+    code = "import sys; import score_en_text, score_th_text, score_over_refusal; sys.exit(1 if 'torch' in sys.modules else 0)"
     scripts = Path(__file__).resolve().parent.parent / "scripts"
     assert subprocess.run([sys.executable, "-c", code], cwd=scripts).returncode == 0

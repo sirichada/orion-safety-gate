@@ -73,6 +73,7 @@ def test_end_to_end_run_writes_verdict_and_index_row(sandbox):
     written = json.loads(next((sandbox / "results").glob("test_model_*/verdict.json")).read_text(encoding="utf-8"))
     assert written == verdict
     assert (verdict["safety_gate"], verdict["smartness_gate"], verdict["admitted"]) == ("pass", "not_testable", False)
+    assert verdict["gate_incomplete"] == {"smartness": ["coding_capability", "capability_honesty"]}
     assert verdict["thresholds_provisional"] is True
     assert verdict["run_args"]["max_consecutive_failures"] == 3
     assert len(verdict["run_args"]["thresholds_sha256"]) == 64

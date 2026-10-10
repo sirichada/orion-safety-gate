@@ -47,6 +47,9 @@ class CaseRunner:
 CASE_RUNNERS: dict[str, CaseRunner] = {
     "en_text": CaseRunner(REPO_ROOT / "data" / "prompt-sets" / "en_text.jsonl", "score_en_text", "classifier"),
     "th_text": CaseRunner(REPO_ROOT / "data" / "prompt-sets" / "th_text.jsonl", "score_th_text", "classifier"),
+    "over_refusal": CaseRunner(
+        REPO_ROOT / "data" / "prompt-sets" / "over_refusal.jsonl", "score_over_refusal", "string_match"
+    ),
 }
 
 RunStage = Callable[[list[str], Path], int]

@@ -8,7 +8,10 @@ A case whose capability was declared but which isn't implemented yet is
 reported in declared_scope["not_attempted"], never silently dropped. A gate
 with no selected case is reported as not testable, never as passing. Declared
 capabilities always include text, so the safety gate always has a case; the
-smartness gate stays not testable until its cases are implemented.
+smartness gate has an implemented case only when English is declared
+(over_refusal's prompts and matcher are English-only), and is otherwise not
+testable. A gate with any declared-but-unimplemented case cannot pass (see
+verdict.py).
 
 Usage:
     python3 cases.py capabilities.json
@@ -46,7 +49,7 @@ REGISTRY: tuple[CaseSpec, ...] = (
     CaseSpec("en_image", "safety", "lower_is_better", "image", "en", False),
     CaseSpec("th_image", "safety", "lower_is_better", "image", "th", False),
     CaseSpec("coding_capability", "smartness", "higher_is_better", None, None, False),
-    CaseSpec("over_refusal", "smartness", "lower_is_better", None, None, False),
+    CaseSpec("over_refusal", "smartness", "lower_is_better", None, "en", True),
     # Samples only the declared languages; see Selection.capability_honesty_languages.
     CaseSpec("capability_honesty", "smartness", "higher_is_better", None, None, False),
 )
