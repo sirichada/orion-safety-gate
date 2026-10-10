@@ -113,3 +113,8 @@ def test_scorer_modules_import_without_torch():
     code = "import sys; import score_en_text, score_th_text, score_over_refusal; sys.exit(1 if 'torch' in sys.modules else 0)"
     scripts = Path(__file__).resolve().parent.parent / "scripts"
     assert subprocess.run([sys.executable, "-c", code], cwd=scripts).returncode == 0
+
+
+def test_every_implemented_case_has_a_runner():
+    missing = [c.case_id for c in REGISTRY if c.implemented and c.case_id not in orchestrator.CASE_RUNNERS]
+    assert missing == []

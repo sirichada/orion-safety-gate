@@ -207,3 +207,96 @@ def test_real_terminal_without_no_input_prompts(sandbox, monkeypatch):
             "--thresholds", str(write_thresholds(sandbox))]
     assert safety_suite.main(argv, run_stage=fake_stages, ask_factory=lambda: ask) is None
     assert ask.confirm_calls == 1
+
+
+def test_only_parses_comma_separated_ids_and_dedupes():
+    assert parse(*BASE, "--only", "over_refusal, en_text,en_text").only == ("over_refusal", "en_text")
+    assert parse(*BASE).only is None
+
+
+@pytest.mark.parametrize("value", ["", "en_text,", "a,,b", "nope", "en_text,nope"])
+def test_only_rejects_empty_tokens_and_unknown_ids(value):
+    with pytest.raises(SystemExit):
+        parse(*BASE, "--only", value)
+
+
+def en_th_sandbox(sandbox, monkeypatch):
+    # en_text borrows th_text's prompt file and scorer module; only the wiring is under test.
+    prompts = sandbox / "th_text.jsonl"
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "en_text", CaseRunner(prompts, "score_th_text", "classifier"))
+    path = sandbox / "t.json"
+    cases = {c: {"threshold": 0.2, "min_scored": 1} for c in ("en_text", "th_text")}
+    path.write_text(json.dumps({"provisional": True, "cases": cases}))
+    return path
+
+
+def run_partial(sandbox, monkeypatch, only, languages=("en", "th")):
+    thresholds = en_th_sandbox(sandbox, monkeypatch)
+    argv = ["run", "--model", "m", "--model-id", "x", "--modalities", "text", "--languages", *languages,
+            "--thresholds", str(thresholds)]
+    if only is not None:
+        argv += ["--only", only]
+    return safety_suite.main(argv, run_stage=fake_stages, interactive=False)
+
+
+def test_partial_run_labels_folder_verdict_and_index(sandbox, monkeypatch):
+    verdict = run_partial(sandbox, monkeypatch, "th_text")
+    assert verdict["run_scope"] == "partial"
+    assert verdict["cases_run"] == ["th_text"]
+    assert verdict["run_args"]["only"] == ["th_text"]
+    assert verdict["admitted"] is False
+    assert verdict["gate_incomplete"]["safety"] == ["en_text"]
+    assert [p.name for p in (sandbox / "results").iterdir() if p.is_dir()][0].endswith("_partial-th_text")
+    index = (sandbox / "_index.md").read_text(encoding="utf-8")
+    assert "scope=partial" in index
+
+
+def test_only_naming_every_applicable_built_case_is_a_full_run_without_suffix(sandbox, monkeypatch):
+    # For a Thai-only declaration th_text is the only applicable built case.
+    verdict = run_partial(sandbox, monkeypatch, "th_text", languages=("th",))
+    assert verdict["run_scope"] == "full"
+    assert verdict["run_args"]["only"] == ["th_text"]
+    names = [p.name for p in (sandbox / "results").iterdir() if p.is_dir()]
+    assert not any("_partial-" in n for n in names)
+
+
+def test_full_run_records_only_as_null(sandbox, monkeypatch):
+    verdict = run_partial(sandbox, monkeypatch, None, languages=("th",))
+    assert verdict["run_scope"] == "full"
+    assert verdict["cases_run"] == ["th_text"]
+    assert verdict["run_args"]["only"] is None
+
+
+def test_only_case_not_applicable_is_a_suite_error_with_an_index_row(sandbox, monkeypatch):
+    with pytest.raises(SystemExit, match="does not apply"):
+        run_partial(sandbox, monkeypatch, "en_text", languages=("th",))
+    assert not (sandbox / "results").exists()
+    assert "suite error" in (sandbox / "_index.md").read_text(encoding="utf-8")
+
+
+def test_confirmation_summary_states_a_partial_run(sandbox, monkeypatch, capsys):
+    ask = FakeAsk(confirm_answer=False)
+    thresholds = en_th_sandbox(sandbox, monkeypatch)
+    argv = ["run", "--model", "m", "--model-id", "x", "--modalities", "text", "--languages", "en", "th",
+            "--thresholds", str(thresholds), "--only", "th_text"]
+    safety_suite.main(argv, run_stage=fake_stages, interactive=True, ask_factory=lambda: ask)
+    out = capsys.readouterr().out
+    assert "Partial run: th_text only. Not an admission verdict." in out
+    assert "left out by --only" in out
+
+
+def test_summary_has_no_partial_banner_without_only(sandbox, monkeypatch, capsys):
+    ask = FakeAsk(confirm_answer=False)
+    run_main(sandbox, ask=ask, interactive=True)
+    assert "Partial run" not in capsys.readouterr().out
+
+
+def test_no_partial_banner_when_only_names_every_applicable_case(sandbox, monkeypatch, capsys):
+    ask = FakeAsk(confirm_answer=False)
+    thresholds = en_th_sandbox(sandbox, monkeypatch)
+    argv = ["run", "--model", "m", "--model-id", "x", "--modalities", "text", "--languages", "th",
+            "--thresholds", str(thresholds), "--only", "th_text"]
+    safety_suite.main(argv, run_stage=fake_stages, interactive=True, ask_factory=lambda: ask)
+    assert "Partial run" not in capsys.readouterr().out
+    verdict = run_partial(sandbox, monkeypatch, "th_text", languages=("th",))
+    assert verdict["run_scope"] == "full"

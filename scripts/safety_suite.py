@@ -7,6 +7,7 @@ Usage:
     python safety_suite.py run --model <hf-repo-or-path-or-api-id> --model-id <stable name> \\
         --capabilities capabilities.json --thresholds ../config/thresholds.json [--backend api]
     python safety_suite.py run --model <...> --model-id <name> --modalities text --languages en th
+    python safety_suite.py run ... --only over_refusal    # partial run; never an admission
 
 In a real terminal, any of --modalities/--languages/--model-id left out is asked for,
 and a summary is shown for confirmation before anything runs (--yes skips the
@@ -28,7 +29,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from cases import select_cases
+from cases import REGISTRY, OnlyError, select_cases
 from cli_input import Cancelled, Inputs, QuestionaryAsk, ask_or_fail, no_terminal_error, resolve_inputs
 from orchestrator import CASE_RUNNERS, REPO_ROOT, RunStage, SuiteError, count_lines, preflight, run_case, run_subprocess
 from verdict import build_verdict
@@ -38,6 +39,20 @@ INDEX = REPO_ROOT / "runs" / "_index.md"
 
 # Forwarded explicitly so every verdict records the N that applied.
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def parse_only(value: str) -> tuple[str, ...]:
+    known = [case.case_id for case in REGISTRY]
+    ids: list[str] = []
+    for token in value.split(","):
+        case_id = token.strip()
+        if not case_id:
+            raise argparse.ArgumentTypeError(f"empty case id in {value!r}")
+        if case_id not in known:
+            raise argparse.ArgumentTypeError(f"unknown case {case_id!r}; known cases: {', '.join(known)}")
+        if case_id not in ids:
+            ids.append(case_id)
+    return tuple(ids)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--modalities", nargs="+", choices=["text", "image"], default=None)
     run.add_argument("--languages", nargs="+", choices=["en", "th"], default=None)
     run.add_argument("--thresholds", default=None, help="Thresholds config JSON (default: config/thresholds.json)")
+    run.add_argument(
+        "--only",
+        type=parse_only,
+        default=None,
+        help="Comma-separated case ids; runs only these. The verdict is marked partial and is never an admission",
+    )
     run.add_argument("--yes", action="store_true", help="Skip the confirmation before running")
     run.add_argument("--no-input", action="store_true", help="Never prompt; every input must be given as a flag")
     run.add_argument("--out", default=None, help="Verdict path (default: verdict.json in the run folder)")
@@ -96,6 +117,7 @@ def run_args_record(args, inputs: Inputs, thresholds_bytes: bytes) -> dict:
         "thresholds_file": str(inputs.thresholds_path),
         "thresholds_sha256": hashlib.sha256(thresholds_bytes).hexdigest(),
         "capabilities_source": inputs.source,
+        "only": list(args.only) if args.only is not None else None,
     }
 
 
@@ -108,6 +130,9 @@ def format_run_summary(args, inputs: Inputs, selection, thresholds: dict) -> str
         "  tests        " + (", ".join(f"{cid} ({n:,} prompts)" for cid, n in counts.items()) or "(none)"),
         f"  total        {sum(counts.values()):,} prompts",
     ]
+    if selection.run_scope == "partial":
+        ran = ", ".join(case.case_id for case in selection.cases)
+        lines.insert(1, f"  scope        Partial run: {ran} only. Not an admission verdict.")
     not_attempted = not_attempted_summary(selection)
     if not_attempted:
         lines.append("  not tested   " + "; ".join(not_attempted))
@@ -125,11 +150,20 @@ def not_attempted_summary(selection) -> list[str]:
     return [f"{', '.join(labels)} ({reason})" for reason, labels in by_reason.items()]
 
 
+def partial_suffix(selection) -> str:
+    if selection.run_scope == "full":
+        return ""
+    return "_partial-" + "+".join(case.case_id for case in selection.cases)
+
+
 def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, confirm=None) -> dict:
     # Hash the same bytes that are parsed, so an edit during a long run can't mismatch the two.
     thresholds_bytes = inputs.thresholds_path.read_bytes()
     thresholds = json.loads(thresholds_bytes.decode("utf-8"))
-    selection = select_cases(inputs.capabilities)
+    try:
+        selection = select_cases(inputs.capabilities, only=args.only)
+    except OnlyError as e:
+        raise SuiteError(str(e)) from e
     preflight(selection, thresholds)
 
     print(format_run_summary(args, inputs, selection, thresholds))
@@ -139,7 +173,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
             raise Cancelled()
 
     safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", inputs.model_id)
-    run_dir = RESULTS / f"{safe_id}_{stamp}"
+    run_dir = RESULTS / f"{safe_id}_{stamp}{partial_suffix(selection)}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
     case_results = [
@@ -161,7 +195,8 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         f"safety={verdict['safety_gate']}, smartness={verdict['smartness_gate']}, admitted={verdict['admitted']}"
         + (" (provisional thresholds)" if verdict["thresholds_provisional"] else "")
     )
-    append_index_row(stamp, inputs.model_id, f"cases: {cases}", outcome, f"{run_dir.relative_to(REPO_ROOT)}/, {out}")
+    scope = "; scope=partial" if verdict["run_scope"] == "partial" else ""
+    append_index_row(stamp, inputs.model_id, f"cases: {cases}{scope}", outcome, f"{run_dir.relative_to(REPO_ROOT)}/, {out}")
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
     return verdict

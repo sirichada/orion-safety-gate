@@ -84,9 +84,9 @@ def selection_with_not_attempted(entries):
 def test_unattempted_cases_ignores_gate_level_markers_and_other_gates():
     selection = selection_with_not_attempted(
         [
-            {"case_id": "en_image", "gate": "safety", "reason": "x"},
-            {"case_id": "coding_capability", "gate": "smartness", "reason": "x"},
-            {"case_id": None, "gate": "smartness", "reason": "no case"},
+            {"case_id": "en_image", "gate": "safety", "reason_code": "unimplemented", "reason": "x"},
+            {"case_id": "coding_capability", "gate": "smartness", "reason_code": "excluded_by_only", "reason": "x"},
+            {"case_id": None, "gate": "smartness", "reason_code": "no_case_applies", "reason": "no case"},
         ]
     )
     assert unattempted_cases(selection, "safety") == ["en_image"]
@@ -136,7 +136,7 @@ def test_unattempted_smartness_cases_block_a_passing_gate():
     assert v["safety_gate"] == PASS
     assert v["smartness_gate"] == INSUFFICIENT
     assert v["admitted"] is False
-    assert v["gate_incomplete"] == {"smartness": ["coding_capability", "capability_honesty"]}
+    assert v["gate_incomplete"] == {"smartness": ["coding_capability", "tool_calling", "capability_honesty"]}
 
 
 def test_declared_image_blocks_a_passing_safety_gate():
@@ -146,8 +146,12 @@ def test_declared_image_blocks_a_passing_safety_gate():
     assert v["gate_incomplete"]["safety"] == ["en_image"]
 
 
+def thai_only_selection():
+    return select_cases(parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["th"]}))
+
+
 def test_not_testable_smartness_blocks_admission():
-    v = verdict([result("en_text", 0.1)])
+    v = verdict([result("th_text", 0.1)], selection=thai_only_selection())
     assert v["safety_gate"] == PASS
     assert v["smartness_gate"] == NOT_TESTABLE
     assert v["admitted"] is False
@@ -162,7 +166,45 @@ def test_verdict_echoes_run_metadata():
 
 
 def test_verdict_round_trips_with_null_score_and_not_testable_gate():
-    v = verdict([result("en_text", None, n_scored=0)])
+    v = verdict([result("th_text", None, n_scored=0)], selection=thai_only_selection())
     assert v["safety_gate"] == INSUFFICIENT
     assert v["smartness_gate"] == NOT_TESTABLE
+    assert json.loads(json.dumps(v)) == v
+
+
+def partial_selection(only, languages=("en", "th")):
+    capabilities = parse_capabilities({"declared_modalities": ["text"], "declared_languages": list(languages)})
+    return select_cases(capabilities, only=only)
+
+
+def test_full_run_records_scope_and_cases_run_in_order():
+    v = verdict([result("en_text", 0.1), result("over_refusal", 0.05, threshold=0.1)])
+    assert v["run_scope"] == "full"
+    assert v["cases_run"] == ["en_text", "over_refusal"]
+
+
+def test_partial_run_is_never_admitted_even_when_every_run_case_passes():
+    v = verdict([result("over_refusal", 0.05, threshold=0.1)], selection=partial_selection(["over_refusal"]))
+    assert v["run_scope"] == "partial"
+    assert v["cases_run"] == ["over_refusal"]
+    assert v["gate_incomplete"]["safety"] == ["en_text", "th_text"]
+    assert v["safety_gate"] == INSUFFICIENT  # every safety case was left out: incomplete, not untestable
+    assert v["smartness_gate"] == INSUFFICIENT
+    assert v["admitted"] is False
+
+
+def test_partial_run_still_reports_a_failing_case_as_fail():
+    v = verdict([result("en_text", 0.9)], selection=partial_selection(["en_text"]))
+    assert v["safety_gate"] == FAIL
+    assert v["admitted"] is False
+
+
+def test_partial_run_of_a_gate_with_no_applicable_case_stays_not_testable():
+    selection = partial_selection(["th_text"], languages=("th",))
+    v = verdict([result("th_text", 0.1)], selection=selection)
+    assert v["smartness_gate"] == NOT_TESTABLE
+
+
+def test_partial_verdict_round_trips_through_json():
+    v = verdict([result("en_text", 0.1)], selection=partial_selection(["en_text"]))
     assert json.loads(json.dumps(v)) == v

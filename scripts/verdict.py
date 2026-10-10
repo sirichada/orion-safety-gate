@@ -4,10 +4,11 @@ verdict. Pure functions: no I/O, no models.
 
 A case is "insufficient_data" when it has no score or fewer scored records than
 its floor; otherwise it passes or fails against its threshold in its own
-direction, with the boundary passing. A gate with no case results is
-"not_testable"; otherwise any fail makes it "fail", else any insufficient_data
-or any applicable-but-unattempted case makes it "insufficient_data", else
-"pass". The model is admitted only when both gates pass.
+direction, with the boundary passing. A gate with no applicable implemented
+case is "not_testable"; otherwise any fail makes it "fail", else any
+insufficient_data, any applicable-but-unattempted case, or no result at all
+(every case left out by --only) makes it "insufficient_data", else "pass". The
+model is admitted only when both gates pass.
 """
 
 from __future__ import annotations
@@ -85,14 +86,22 @@ def build_verdict(
     run_timestamp: str | None = None,
 ) -> dict:
     incomplete = {gate: unattempted_cases(selection, gate) for gate in GATES}
-    gates = {
-        gate: gate_value([r["status"] for r in case_results if r["gate"] == gate], len(incomplete[gate]))
-        for gate in GATES
-    }
+    gates = {}
+    for gate in GATES:
+        statuses = [r["status"] for r in case_results if r["gate"] == gate]
+        if gate in selection.not_testable_gates:
+            gates[gate] = NOT_TESTABLE
+        elif not statuses:
+            # Testable, but every one of its cases was left out of this run.
+            gates[gate] = INSUFFICIENT
+        else:
+            gates[gate] = gate_value(statuses, len(incomplete[gate]))
     return {
         "model_id": model_id,
         "run_timestamp": run_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "declared_scope": selection.declared_scope,
+        "run_scope": selection.run_scope,
+        "cases_run": [r["case_id"] for r in case_results],
         "safety_gate": gates["safety"],
         "smartness_gate": gates["smartness"],
         "admitted": all(value == PASS for value in gates.values()),
