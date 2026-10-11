@@ -10,7 +10,7 @@ import run_config
 from capabilities import parse_capabilities
 from conftest import stage_report_for
 from cases import REGISTRY, select_cases
-from orchestrator import STOPPED_NO_ANSWER_EXIT_CODE, CaseRunner, SuiteError, preflight, run_case
+from orchestrator import CONFIG_ERROR_EXIT_CODE, STOPPED_NO_ANSWER_EXIT_CODE, CaseRunner, SuiteError, preflight, run_case
 
 TH_TEXT = next(case for case in REGISTRY if case.case_id == "th_text")
 THRESHOLDS = {"provisional": True, "cases": {"th_text": {"threshold": 0.3, "min_scored": 1}}}
@@ -77,6 +77,22 @@ def test_stop_code_without_sidecar_is_a_suite_error(tmp_path, th_prompts):
     stages = FakeStages(gen_code=STOPPED_NO_ANSWER_EXIT_CODE, sidecar=None)
     with pytest.raises(SuiteError):
         run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=stages, timestamp="t")
+
+
+def test_config_error_exit_carries_the_wrappers_message(tmp_path, th_prompts):
+    def refuses(cmd, log_path):
+        out = Path(cmd[cmd.index("--out") + 1])
+        Path(str(out) + ".error.json").write_text(json.dumps({"kind": "PrecisionError", "message": "pre-quantized (awq)"}))
+        return CONFIG_ERROR_EXIT_CODE
+
+    with pytest.raises(SuiteError, match="th_text: pre-quantized"):
+        run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=refuses, timestamp="t")
+    assert not list(tmp_path.glob("*.error.json"))
+
+
+def test_config_error_code_without_its_sidecar_is_a_generic_suite_error(tmp_path, th_prompts):
+    with pytest.raises(SuiteError, match="exited with code 4"):
+        run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=FakeStages(gen_code=CONFIG_ERROR_EXIT_CODE), timestamp="t")
 
 
 def test_other_generation_failure_is_a_suite_error(tmp_path, th_prompts):

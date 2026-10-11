@@ -36,7 +36,7 @@ DEFAULTS = {
     "max_input_tokens": 2048,
 }
 
-PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "system_prompt": "none"}
+PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system_prompt": "none"}
 
 TEMPLATE_PLACEHOLDER = "<<ORION_RUN_CONFIG_PLACEHOLDER>>"
 TEMPLATE_PARAMETERS = ("enable_thinking", "reasoning_effort")

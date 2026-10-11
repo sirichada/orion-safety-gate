@@ -6,8 +6,11 @@ operating system frees each model's GPU memory before the next one loads.
 Generation that stops on consecutive no-answer batches exits with
 model_wrapper.STOPPED_NO_ANSWER_EXIT_CODE and leaves a <responses>.stopped.json
 sidecar; that case is recorded as insufficient_data and scoring is skipped.
-Any other failure, including that exit code without its sidecar, is a suite
-error and stops the whole run.
+A generation that cannot load the model with the requested precision or
+revision exits with model_wrapper.CONFIG_ERROR_EXIT_CODE and leaves a
+<responses>.error.json sidecar; its message becomes the suite error and the
+sidecar is removed. Any other failure, including either exit code without its
+sidecar, is a suite error and stops the whole run.
 
 Every generation stage also leaves <responses>.run_config.json (see run_config.py);
 a case whose generation finished or stopped without one is a suite error.
@@ -35,6 +38,9 @@ LOGS = REPO_ROOT / "runs" / "logs"
 # Kept equal to model_wrapper.STOPPED_NO_ANSWER_EXIT_CODE without importing it,
 # so this process never imports the model-calling stack.
 STOPPED_NO_ANSWER_EXIT_CODE = 3
+
+# Kept equal to model_wrapper.CONFIG_ERROR_EXIT_CODE for the same reason.
+CONFIG_ERROR_EXIT_CODE = 4
 
 
 class SuiteError(RuntimeError):
@@ -167,6 +173,11 @@ def run_case(
             f"({stop['n_attempted']}/{stop['n_prompts']} prompts attempted, {stop['n_answered']} answered)"
         )
         return result(None, 0, notes, None)
+    error_sidecar = Path(str(responses) + ".error.json")
+    if code == CONFIG_ERROR_EXIT_CODE and error_sidecar.exists():
+        message = json.loads(error_sidecar.read_text(encoding="utf-8"))["message"]
+        error_sidecar.unlink()
+        raise SuiteError(f"{case.case_id}: {message}")
     if code != 0:
         raise SuiteError(f"{case.case_id}: generation exited with code {code}")
     n_truncated_inputs = read_run_config(responses, case.case_id)["n_truncated_inputs"]

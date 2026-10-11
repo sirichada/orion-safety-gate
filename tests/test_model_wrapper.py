@@ -81,6 +81,19 @@ def test_a_stopped_run_still_leaves_its_configuration(wrapper, monkeypatch):
     assert (wrapper.out.parent / "responses.jsonl.stopped.json").exists()
 
 
+def test_unloadable_precision_exits_with_the_config_error_code_and_message(wrapper, monkeypatch):
+    def refuse(model, adapter, **kwargs):
+        raise run_config.PrecisionError("the checkpoint is pre-quantized (awq)")
+
+    monkeypatch.setattr(model_wrapper, "load_model", refuse)
+    with pytest.raises(SystemExit) as exit_info:
+        wrapper.run("--out", str(wrapper.out))
+    assert exit_info.value.code == model_wrapper.CONFIG_ERROR_EXIT_CODE
+    error = json.loads((wrapper.out.parent / "responses.jsonl.error.json").read_text(encoding="utf-8"))
+    assert error == {"kind": "PrecisionError", "message": "the checkpoint is pre-quantized (awq)"}
+    assert not wrapper.out.exists()
+
+
 def test_local_checkpoint_is_identified_by_its_files(wrapper, tmp_path):
     local = tmp_path / "ckpt"
     local.mkdir()

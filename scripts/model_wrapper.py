@@ -31,6 +31,10 @@ from hf_model import load_causal_lm, unload
 # <out>.stopped.json sidecar, so a bare 3 from anywhere else isn't mistaken for it.
 STOPPED_NO_ANSWER_EXIT_CODE = 3
 
+# Exit code for a run that could not start because the requested precision or revision
+# cannot be applied. Always paired with a <out>.error.json sidecar holding the message.
+CONFIG_ERROR_EXIT_CODE = 4
+
 
 class StoppedNoAnswer(RuntimeError):
     """Raised when consecutive batches produce no answer for any prompt."""
@@ -262,13 +266,20 @@ def main():
         model = tokenizer = None
         generate = make_api_generate(args.model, max_workers=args.batch_size)
     else:
-        model, tokenizer = load_model(
-            args.model,
-            args.adapter,
-            precision=args.precision,
-            revision=args.model_revision,
-            adapter_revision=args.adapter_revision,
-        )
+        try:
+            model, tokenizer = load_model(
+                args.model,
+                args.adapter,
+                precision=args.precision,
+                revision=args.model_revision,
+                adapter_revision=args.adapter_revision,
+            )
+        except (run_config.PrecisionError, run_config.RevisionError) as e:
+            print(f"Cannot load the model: {e}", file=sys.stderr)
+            if args.out:
+                error = {"kind": type(e).__name__, "message": str(e)}
+                Path(args.out + ".error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
+            sys.exit(CONFIG_ERROR_EXIT_CODE)
         generate = make_generate(
             model, tokenizer, max_input_tokens=args.max_input_tokens, apply_chat_template=not args.no_chat_template
         )

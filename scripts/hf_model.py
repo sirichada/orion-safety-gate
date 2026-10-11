@@ -63,9 +63,9 @@ def load_causal_lm(
         if precision == "4bit":
             load_kwargs["quantization_config"] = quantization_config_4bit()
         elif precision == "full":
-            load_kwargs["torch_dtype"] = torch.bfloat16
+            load_kwargs["dtype"] = torch.bfloat16
         else:
-            load_kwargs["torch_dtype"] = "auto"
+            load_kwargs["dtype"] = "auto"
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, **({"revision": revision} if revision else {}))
     if tokenizer.pad_token is None:

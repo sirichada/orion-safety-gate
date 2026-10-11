@@ -345,7 +345,7 @@ def test_run_args_record_effective_configuration(sandbox):
     ra = verdict["run_args"]
     assert (ra["backend"], ra["batch_size"], ra["max_consecutive_failures"]) == ("hf", 8, 3)
     assert ra["precision"]["mode"] == "4bit" and ra["precision"]["weights_dtype"] == "float16"
-    assert ra["protocol"] == {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "system_prompt": "none"}
+    assert ra["protocol"] == {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system_prompt": "none"}
     assert ra["per_model"]["max_new_tokens"] == 256 and ra["per_model"]["max_input_tokens"] == 2048
     assert ra["model_input"]["chat_template"]["prefix"] == "<s>[INST] "
     assert ra["model_revision"] == "a" * 40 and ra["adapter_revision"] is None
@@ -404,6 +404,20 @@ def test_missing_run_config_is_a_suite_error(sandbox):
 
     with pytest.raises(SystemExit, match="run configuration"):
         safety_suite.main(th_argv(sandbox), run_stage=no_report, interactive=False)
+
+
+def test_wrapper_config_error_message_reaches_the_suite_error_and_leaves_no_run_folder(sandbox):
+    message = "the checkpoint is pre-quantized (awq); --precision 4bit would re-quantize or upcast it."
+
+    def refuses(cmd, log_path):
+        out = Path(cmd[cmd.index("--out") + 1])
+        Path(str(out) + ".error.json").write_text(json.dumps({"kind": "PrecisionError", "message": message}))
+        return 4
+
+    with pytest.raises(SystemExit, match="pre-quantized"):
+        safety_suite.main(th_argv(sandbox), run_stage=refuses, interactive=False)
+    assert "pre-quantized" in (sandbox / "_index.md").read_text(encoding="utf-8")
+    assert list((sandbox / "results").iterdir()) == []
 
 
 def test_wrapper_that_did_not_use_the_forwarded_settings_is_a_suite_error(sandbox):

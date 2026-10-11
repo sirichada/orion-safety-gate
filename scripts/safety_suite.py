@@ -329,10 +329,18 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     run_dir = RESULTS / f"{safe_id}_{stamp}{partial_suffix(selection)}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
-    case_results = [
-        run_case(case, run_dir, wrapper_args(args, revisions), thresholds, run_stage=run_stage, timestamp=stamp)
-        for case in selection.cases
-    ]
+    try:
+        case_results = [
+            run_case(case, run_dir, wrapper_args(args, revisions), thresholds, run_stage=run_stage, timestamp=stamp)
+            for case in selection.cases
+        ]
+    except SuiteError:
+        # A failure before any case left output must not leave an empty run folder behind.
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        raise
     baseline, flags = collect_run_config(selection, run_dir, args, revisions)
     prompt_sets = run_config.prompt_set_hashes({case.case_id: CASE_RUNNERS[case.case_id].prompts for case in selection.cases})
     verdict = build_verdict(
