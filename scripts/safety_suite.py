@@ -8,6 +8,9 @@ Usage:
         --capabilities capabilities.json --thresholds ../config/thresholds.json [--backend api]
     python safety_suite.py run --model <...> --model-id <name> --modalities text --languages en th
     python safety_suite.py run ... --only over_refusal    # partial run; never an admission
+    python safety_suite.py run --backend api --max-thb 40 ...    # api runs need a spend limit
+    python safety_suite.py run --backend api --dry-run ...       # per-case worst-case/expected THB; no key, no network
+    python safety_suite.py run ... --resume runs/results/<run folder>    # continue an interrupted run
 
 In a real terminal, any of --modalities/--languages/--model-id left out is asked for,
 and a summary is shown for confirmation before anything runs (--yes skips the
@@ -48,6 +51,8 @@ from verdict import build_verdict
 
 RESULTS = REPO_ROOT / "runs" / "results"
 INDEX = REPO_ROOT / "runs" / "_index.md"
+DEFAULT_GENERATION_CONFIG = REPO_ROOT / "config" / "generation.json"
+SPEND_LEDGER_NAME = "spend_ledger.json"
 
 # Forwarded explicitly so every verdict records the N that applied.
 DEFAULT_MAX_CONSECUTIVE_FAILURES = run_config.DEFAULTS["max_consecutive_failures"]
@@ -88,7 +93,26 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", default=None, help="Verdict path (default: verdict.json in the run folder)")
     run.add_argument("--backend", choices=["hf", "api"], default="hf")
     run.add_argument("--adapter", default=None, help="Optional PEFT adapter (hf backend only)")
-    run.add_argument("--batch-size", type=int, default=run_config.DEFAULTS["batch_size"])
+    run.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=f"Prompts per generate() call (default: {run_config.DEFAULTS['batch_size']} hf, "
+        f"{run_config.DEFAULTS['api_batch_size']} api, where it only sets checkpoint granularity)",
+    )
+    run.add_argument(
+        "--api-concurrency",
+        type=int,
+        default=run_config.DEFAULTS["api_concurrency"],
+        help=f"api backend: requests in flight at once, 1 to {run_config.API_CONCURRENCY_CEILING}",
+    )
+    run.add_argument("--max-thb", type=float, default=None, help="api backend: spend limit in THB for the whole run (required)")
+    run.add_argument("--generation-config", default=None, help="Per-case/per-model cap table (default: config/generation.json)")
+    run.add_argument(
+        "--calibration-file", default=None, help="calibration.json from tools/calibrate_caps.py, for --dry-run's expected spend"
+    )
+    run.add_argument("--resume", default=None, help="Run folder of an interrupted run to continue (same settings only)")
+    run.add_argument("--dry-run", action="store_true", help="Show the plan and its spend bounds; run nothing and write nothing")
     run.add_argument(
         "--precision",
         choices=run_config.PRECISIONS,
@@ -107,6 +131,9 @@ def parse_args(argv: list[str] | None = None):
     args = parser.parse_args(argv)
     if args.max_consecutive_failures < 1:
         parser.error("--max-consecutive-failures must be >= 1")
+    if args.batch_size is None:
+        key = "api_batch_size" if args.backend == "api" else "batch_size"
+        args.batch_size = run_config.DEFAULTS[key]
     if args.batch_size < 1:
         parser.error("--batch-size must be >= 1")
     if args.adapter_revision and not args.adapter:
@@ -124,6 +151,15 @@ def parse_args(argv: list[str] | None = None):
         ]
         if hf_only:
             parser.error(f"{', '.join(hf_only)} apply only to the hf backend")
+        if not 1 <= args.api_concurrency <= run_config.API_CONCURRENCY_CEILING:
+            parser.error(f"--api-concurrency must be between 1 and {run_config.API_CONCURRENCY_CEILING}")
+        if args.max_thb is None:
+            if not args.dry_run:
+                parser.error("--max-thb is required for --backend api (the spend limit for the whole run, in THB)")
+        elif not args.max_thb > 0:
+            parser.error("--max-thb must be positive")
+    elif args.max_thb is not None:
+        parser.error("--max-thb applies only to the api backend")
     return args
 
 
@@ -135,10 +171,23 @@ def resolve_local(value: str | None) -> str | None:
     return str(Path(value).resolve()) if Path(value).exists() else value
 
 
-def wrapper_args(args, revisions: dict | None = None) -> list[str]:
+def case_caps(generation: dict | None) -> dict:
+    """The caps one case runs with; the protocol defaults when no table entry was resolved."""
+    d = run_config.DEFAULTS
+    generation = generation or {}
+    return {
+        "max_new_tokens": generation.get("max_new_tokens") or d["max_new_tokens"],
+        "max_input_tokens": generation.get("max_input_tokens") or d["max_input_tokens"],
+    }
+
+
+def wrapper_args(
+    args, revisions: dict | None = None, generation: dict | None = None, spend_ledger: Path | None = None
+) -> list[str]:
     """Every protocol, hardware and per-model value is forwarded, so no wrapper default is relied on."""
     revisions = revisions or {}
     d = run_config.DEFAULTS
+    caps = case_caps(generation)
     forwarded = [
         "--model", resolve_local(args.model),
         "--backend", args.backend,
@@ -146,12 +195,23 @@ def wrapper_args(args, revisions: dict | None = None) -> list[str]:
         "--max-consecutive-failures", str(args.max_consecutive_failures),
         "--temperature", str(run_config.PROTOCOL["temperature"]),
         "--top-p", str(run_config.PROTOCOL["top_p"]),
-        "--max-new-tokens", str(d["max_new_tokens"]),
+        "--max-new-tokens", str(caps["max_new_tokens"]),
     ]
     if args.adapter:
         forwarded += ["--adapter", resolve_local(args.adapter)]
+    if args.backend == "api":
+        forwarded += [
+            "--api-concurrency", str(args.api_concurrency),
+            "--no-answer-retries", str(d["no_answer_retries"]),
+        ]
+        if args.max_thb is not None:
+            forwarded += ["--max-thb", str(args.max_thb)]
+        if spend_ledger is not None:
+            forwarded += ["--spend-ledger", str(spend_ledger)]
+    if getattr(args, "resume", None):
+        forwarded += ["--resume"]
     if args.backend == "hf":
-        forwarded += ["--precision", args.precision, "--max-input-tokens", str(d["max_input_tokens"])]
+        forwarded += ["--precision", args.precision, "--max-input-tokens", str(caps["max_input_tokens"])]
         if revisions.get("model"):
             forwarded += ["--model-revision", revisions["model"]]
         if revisions.get("adapter"):
@@ -159,10 +219,11 @@ def wrapper_args(args, revisions: dict | None = None) -> list[str]:
     return forwarded
 
 
-def forwarded_values(args, revisions: dict | None = None) -> dict:
+def forwarded_values(args, revisions: dict | None = None, generation: dict | None = None) -> dict:
     """What a stage's report must say it used, for the arguments wrapper_args forwards."""
     revisions = revisions or {}
     d = run_config.DEFAULTS
+    caps = case_caps(generation)
     values = {
         "backend": args.backend,
         "model": resolve_local(args.model),
@@ -171,12 +232,14 @@ def forwarded_values(args, revisions: dict | None = None) -> dict:
         "max_consecutive_failures": args.max_consecutive_failures,
         "temperature": run_config.PROTOCOL["temperature"],
         "top_p": run_config.PROTOCOL["top_p"],
-        "max_new_tokens": d["max_new_tokens"],
+        "max_new_tokens": caps["max_new_tokens"],
     }
+    if args.backend == "api":
+        values.update(api_concurrency=args.api_concurrency, no_answer_retries=d["no_answer_retries"])
     if args.backend == "hf":
         values.update(
             precision=args.precision,
-            max_input_tokens=d["max_input_tokens"],
+            max_input_tokens=caps["max_input_tokens"],
             model_revision=revisions.get("model"),
             adapter_revision=revisions.get("adapter"),
         )
@@ -207,7 +270,15 @@ def resolve_run_revisions(args) -> dict:
 
 
 def build_run_args(
-    args, inputs: Inputs, thresholds_bytes: bytes, baseline: dict, flags: list[dict], prompt_sets: dict
+    args,
+    inputs: Inputs,
+    thresholds_bytes: bytes,
+    baseline: dict,
+    flags: list[dict],
+    prompt_sets: dict,
+    generation: dict | None = None,
+    generation_source: str | None = None,
+    spent_thb: float | None = None,
 ) -> dict:
     provenance = baseline["provenance"]
     return {
@@ -223,6 +294,21 @@ def build_run_args(
         "thresholds_sha256": hashlib.sha256(thresholds_bytes).hexdigest(),
         "capabilities_source": inputs.source,
         "only": list(args.only) if args.only is not None else None,
+        "generation": {
+            "per_case": generation,
+            "sha256": run_config.generation_sha256(generation) if generation is not None else None,
+            "source": generation_source,
+        },
+        "api": (
+            {
+                "concurrency": args.api_concurrency,
+                "no_answer_retries": run_config.DEFAULTS["no_answer_retries"],
+                "max_thb": args.max_thb,
+                "spent_thb": spent_thb,
+            }
+            if args.backend == "api"
+            else None
+        ),
         "protocol": dict(run_config.PROTOCOL),
         "per_model": baseline["per_model"],
         "model_input": baseline["model_input"],
@@ -239,13 +325,15 @@ def build_run_args(
     }
 
 
-def format_run_summary(args, inputs: Inputs, selection, thresholds: dict, revisions: dict | None = None) -> str:
+def format_run_summary(
+    args, inputs: Inputs, selection, thresholds: dict, revisions: dict | None = None, generation: dict | None = None
+) -> str:
     counts = {case.case_id: count_lines(CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
     lines = [
         "About to run:",
         f"  model        {args.model}  ({args.backend})",
         f"  record as    {inputs.model_id}",
-        f"  settings     {settings_line(args, revisions or {})}",
+        f"  settings     {settings_line(args, revisions or {}, generation)}",
         "  tests        " + (", ".join(f"{cid} ({n:,} prompts)" for cid, n in counts.items()) or "(none)"),
         f"  total        {sum(counts.values()):,} prompts",
     ]
@@ -255,17 +343,27 @@ def format_run_summary(args, inputs: Inputs, selection, thresholds: dict, revisi
     not_attempted = not_attempted_summary(selection)
     if not_attempted:
         lines.append("  not tested   " + "; ".join(not_attempted))
+    if args.backend == "api" and args.max_thb is not None:
+        lines.append(f"  spend limit  {args.max_thb:g} THB for the whole run ({args.api_concurrency} requests in flight)")
     if thresholds.get("provisional", True):
         lines.append("  note         thresholds are provisional placeholders; the verdict is not a real decision")
     return "\n".join(lines)
 
 
-def settings_line(args, revisions: dict) -> str:
+def settings_line(args, revisions: dict, generation: dict | None = None) -> str:
     d = run_config.DEFAULTS
-    parts = [f"batch {args.batch_size}", f"max_new_tokens {d['max_new_tokens']}", "greedy"]
+    if generation:
+        caps = {cid: case_caps(g)["max_new_tokens"] for cid, g in generation.items()}
+        cap_text = "max_new_tokens " + (
+            str(next(iter(caps.values()))) if len(set(caps.values())) == 1 else ", ".join(f"{c} {n}" for c, n in caps.items())
+        )
+    else:
+        cap_text = f"max_new_tokens {d['max_new_tokens']}"
+    parts = [f"batch {args.batch_size}", cap_text, "temperature 0, top_p 1 requested"]
     if args.backend == "hf":
         parts.insert(0, f"precision {args.precision}")
-        parts.append(f"max_input_tokens {d['max_input_tokens']}")
+        input_caps = {case_caps(g)["max_input_tokens"] for g in (generation or {}).values()} or {d["max_input_tokens"]}
+        parts.append("max_input_tokens " + "/".join(str(n) for n in sorted(input_caps)))
         if revisions.get("model"):
             parts.append(f"model@{revisions['model'][:12]}")
         if args.adapter and revisions.get("adapter"):
@@ -273,14 +371,16 @@ def settings_line(args, revisions: dict) -> str:
     return ", ".join(parts)
 
 
-def collect_run_config(selection, run_dir: Path, args, revisions: dict) -> tuple[dict, list[dict]]:
+def collect_run_config(
+    selection, run_dir: Path, args, revisions: dict, generation: dict | None = None
+) -> tuple[dict, list[dict]]:
     """Reads every case's stage report, checks it against what was forwarded, and merges them.
 
     A difference in anything that defines what was tested stops the run without a verdict.
     """
-    expected = forwarded_values(args, revisions)
     reports = {}
     for case in selection.cases:
+        expected = forwarded_values(args, revisions, (generation or {}).get(case.case_id))
         report = read_run_config(responses_path(run_dir, case), case.case_id)
         problems = run_config.check_forwarded(expected, report)
         if problems:
@@ -318,20 +418,52 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         raise SuiteError(str(e)) from e
     preflight(selection, thresholds)
 
+    generation_path = Path(args.generation_config) if args.generation_config else DEFAULT_GENERATION_CONFIG
+    try:
+        table = run_config.load_generation_config(generation_path)
+        generation = {
+            case.case_id: run_config.resolve_generation(table, case.case_id, inputs.model_id, args.backend)
+            for case in selection.cases
+        }
+    except run_config.GenerationConfigError as e:
+        raise SuiteError(str(e)) from e
+    if args.backend == "api":
+        unpriced = api_price_problem(args.model)
+        if unpriced:
+            raise SuiteError(unpriced)
+
     revisions = resolve_run_revisions(args)
-    print(format_run_summary(args, inputs, selection, thresholds, revisions))
+    print(format_run_summary(args, inputs, selection, thresholds, revisions, generation))
+    if args.dry_run:
+        print(format_dry_run(args, selection, generation, args.calibration_file))
+        print("Dry run: nothing was sent and nothing was written.")
+        return None
     if confirm is not None:
         answer = confirm("Proceed?")
         if not answer:
             raise Cancelled()
 
-    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", inputs.model_id)
-    run_dir = RESULTS / f"{safe_id}_{stamp}{partial_suffix(selection)}"
-    run_dir.mkdir(parents=True, exist_ok=False)
+    if args.resume:
+        run_dir = Path(args.resume)
+        if not run_dir.is_dir():
+            raise SuiteError(f"--resume: {run_dir} is not a run folder")
+    else:
+        safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", inputs.model_id)
+        run_dir = RESULTS / f"{safe_id}_{stamp}{partial_suffix(selection)}"
+        run_dir.mkdir(parents=True, exist_ok=False)
+    ledger = run_dir / SPEND_LEDGER_NAME if args.backend == "api" else None
 
     try:
         case_results = [
-            run_case(case, run_dir, wrapper_args(args, revisions), thresholds, run_stage=run_stage, timestamp=stamp)
+            run_case(
+                case,
+                run_dir,
+                wrapper_args(args, revisions, generation[case.case_id], ledger),
+                thresholds,
+                run_stage=run_stage,
+                timestamp=stamp,
+                generation=generation[case.case_id],
+            )
             for case in selection.cases
         ]
     except SuiteError:
@@ -341,14 +473,24 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         except OSError:
             pass
         raise
-    baseline, flags = collect_run_config(selection, run_dir, args, revisions)
+    baseline, flags = collect_run_config(selection, run_dir, args, revisions, generation)
     prompt_sets = run_config.prompt_set_hashes({case.case_id: CASE_RUNNERS[case.case_id].prompts for case in selection.cases})
     verdict = build_verdict(
         inputs.model_id,
         selection,
         case_results,
         thresholds_provisional=bool(thresholds.get("provisional", True)),
-        run_args=build_run_args(args, inputs, thresholds_bytes, baseline, flags, prompt_sets),
+        run_args=build_run_args(
+            args,
+            inputs,
+            thresholds_bytes,
+            baseline,
+            flags,
+            prompt_sets,
+            generation=generation,
+            generation_source=str(generation_path) if table is not None else None,
+            spent_thb=read_spent(ledger),
+        ),
     )
 
     out = Path(args.out) if args.out else run_dir / "verdict.json"
@@ -363,6 +505,71 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
     return verdict
+
+
+def read_spent(ledger: Path | None) -> float | None:
+    if ledger is None or not ledger.exists():
+        return None
+    return json.loads(ledger.read_text(encoding="utf-8"))["spent_thb"]
+
+
+def api_price_problem(model: str) -> str | None:
+    import api_model
+
+    if model not in api_model.PRICES_THB_PER_M:
+        return f"no price for model {model!r} in api_model.PRICES_THB_PER_M; refusing to run without a spend bound"
+    return None
+
+
+def format_dry_run(args, selection, generation: dict, calibration_file: str | None) -> str:
+    """Per-case and total THB bounds for an api run, and a plain note for an hf run."""
+    if args.backend != "api":
+        return "  spend        hf backend: no API spend"
+    import api_model
+
+    price_in, price_out = api_model.PRICES_THB_PER_M.get(args.model, (None, None))
+    if price_in is None:
+        return f"  spend        no price for {args.model!r}; an api run would be refused"
+    calibration = None
+    if calibration_file:
+        calibration = json.loads(Path(calibration_file).read_text(encoding="utf-8"))
+        if calibration.get("model") != args.model:
+            raise SuiteError(
+                f"--calibration-file is for model {calibration.get('model')!r}, not {args.model!r}"
+            )
+    rows = []
+    total_worst = total_expected = 0.0
+    expected_known = calibration is not None
+    for case in selection.cases:
+        runner = CASE_RUNNERS[case.case_id]
+        cap = generation[case.case_id]["max_new_tokens"]
+        prompts = [json.loads(line).get("model_input", "") for line in runner.prompts.read_text(encoding="utf-8").splitlines() if line.strip()]
+        worst = sum(api_model.worst_case_thb(args.model, api_model.estimate_input_tokens(p), cap) for p in prompts)
+        expected = None
+        sample = (calibration or {}).get("cases", {}).get(case.case_id)
+        if sample:
+            per_prompt = (sample["mean_prompt_tokens"] * price_in + sample["mean_completion_tokens"] * price_out) / 1_000_000
+            expected = per_prompt * len(prompts)
+            total_expected += expected
+        else:
+            expected_known = False
+        total_worst += worst
+        rows.append((case.case_id, len(prompts), cap, worst, expected))
+    lines = [
+        f"  spend bounds ({args.model}; THB {price_in:g} in / {price_out:g} out per 1M tokens)",
+        "    case            prompts   cap   worst case    expected",
+    ]
+    for case_id, n, cap, worst, expected in rows:
+        exp_text = f"{expected:10.2f}" if expected is not None else "       n/a"
+        lines.append(f"    {case_id:<15}{n:8,}{cap:7,}{worst:13.2f}{exp_text:>12}")
+    exp_total = f"{total_expected:10.2f}" if expected_known else "       n/a"
+    lines.append(f"    {'total':<15}{sum(r[1] for r in rows):8,}{'':7}{total_worst:13.2f}{exp_total:>12}")
+    if not expected_known:
+        lines.append("    expected is n/a without a calibration file covering every case (tools/calibrate_caps.py)")
+    if args.max_thb is not None:
+        verdict = "within" if total_worst <= args.max_thb else "ABOVE"
+        lines.append(f"    --max-thb {args.max_thb:g}: worst case {total_worst:.2f} is {verdict} the limit; the guard stops a run that would pass it")
+    return "\n".join(lines)
 
 
 def _cell(text: str) -> str:

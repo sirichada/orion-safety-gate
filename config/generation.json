@@ -1,0 +1,9 @@
+{
+  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. The defaults here are the protocol values, not calibrated for thinking models; model entries come from tools/calibrate_caps.py output after review.",
+  "cases": {
+    "en_text": {"max_new_tokens": 256, "max_input_tokens": 2048},
+    "th_text": {"max_new_tokens": 256, "max_input_tokens": 2048},
+    "over_refusal": {"max_new_tokens": 256, "max_input_tokens": 2048}
+  },
+  "models": {}
+}

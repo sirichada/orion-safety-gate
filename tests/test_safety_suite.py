@@ -18,10 +18,13 @@ BASE = ["--model", "m", "--model-id", "Mango 1.5-9B", "--capabilities", "c.json"
 
 
 def test_wrapper_args_always_forward_every_setting():
-    api = safety_suite.wrapper_args(parse(*BASE, "--backend", "api", "--batch-size", "4", "--max-consecutive-failures", "5"))
+    api = safety_suite.wrapper_args(
+        parse(*BASE, "--backend", "api", "--batch-size", "4", "--max-consecutive-failures", "5", "--max-thb", "12")
+    )
     assert api == [
         "--model", "m", "--backend", "api", "--batch-size", "4", "--max-consecutive-failures", "5",
         "--temperature", "0.0", "--top-p", "1.0", "--max-new-tokens", "256",
+        "--api-concurrency", "3", "--no-answer-retries", "0", "--max-thb", "12.0",
     ]
     hf = safety_suite.wrapper_args(parse(*BASE, "--precision", "full"), {"model": "a" * 40, "adapter": None})
     assert hf == [
@@ -29,6 +32,40 @@ def test_wrapper_args_always_forward_every_setting():
         "--temperature", "0.0", "--top-p", "1.0", "--max-new-tokens", "256",
         "--precision", "full", "--max-input-tokens", "2048", "--model-revision", "a" * 40,
     ]
+
+
+def test_per_case_caps_and_ledger_are_forwarded():
+    args = parse(*BASE, "--backend", "api", "--max-thb", "3", "--api-concurrency", "2", "--resume", "some/run")
+    forwarded = safety_suite.wrapper_args(args, None, {"max_new_tokens": 4096}, Path("run/spend_ledger.json"))
+    assert forwarded[forwarded.index("--max-new-tokens") + 1] == "4096"
+    assert forwarded[forwarded.index("--api-concurrency") + 1] == "2"
+    assert forwarded[forwarded.index("--spend-ledger") + 1] == str(Path("run/spend_ledger.json"))
+    assert "--resume" in forwarded
+    assert safety_suite.forwarded_values(args, None, {"max_new_tokens": 4096})["max_new_tokens"] == 4096
+
+
+def test_api_defaults_batch_to_a_checkpoint_size_and_concurrency_to_three():
+    args = parse(*BASE, "--backend", "api", "--max-thb", "3")
+    assert (args.batch_size, args.api_concurrency) == (12, 3)
+    assert parse(*BASE).batch_size == 8
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--backend", "api"],  # no --max-thb
+        ["--backend", "api", "--max-thb", "0"],
+        ["--backend", "api", "--max-thb", "5", "--api-concurrency", "4"],
+        ["--max-thb", "5"],  # hf
+    ],
+)
+def test_api_runs_need_a_spend_limit_and_at_most_three_in_flight(extra):
+    with pytest.raises(SystemExit):
+        parse(*BASE, *extra)
+
+
+def test_dry_run_may_omit_the_spend_limit():
+    assert parse(*BASE, "--backend", "api", "--dry-run").max_thb is None
 
 
 def test_precision_choices_and_default():
@@ -457,8 +494,18 @@ def test_cases_with_different_environment_are_flagged_not_failed(sandbox, monkey
     assert [m["field"] for m in verdict["run_args"]["config_mismatches"]] == ["provenance.gpu"]
 
 
+def write_generation(sandbox, **models):
+    path = sandbox / "generation.json"
+    path.write_text(json.dumps({"cases": {}, "models": models}), encoding="utf-8")
+    return str(path)
+
+
+API = ["--backend", "api", "--model", "Mango 1.5-9B"]
+
+
 def test_api_backend_records_unavailable_not_defaults(sandbox):
-    argv = th_argv(sandbox, "--backend", "api", "--batch-size", "4")
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--batch-size", "4", "--max-thb", "40", "--generation-config", generation)
     verdict = safety_suite.main(argv, run_stage=fake_stages, interactive=False)
     ra = verdict["run_args"]
     assert ra["batch_size"] == 4
@@ -468,6 +515,108 @@ def test_api_backend_records_unavailable_not_defaults(sandbox):
     assert ra["provenance"]["api"]["base_url"] == "https://api.example/v1"
     assert ra["provenance"]["api"]["reported_model"] == {"available": False, "reason": "deferred"}
     assert verdict["case_results"][0]["n_truncated_inputs"]["available"] is False
+    assert ra["api"] == {"concurrency": 3, "no_answer_retries": 0, "max_thb": 40.0, "spent_thb": None}
+    assert ra["generation"]["per_case"] == {"th_text": {"max_new_tokens": 4096, "max_input_tokens": None}}
+    assert len(ra["generation"]["sha256"]) == 64 and ra["generation"]["source"] == generation
+    assert verdict["case_results"][0]["max_new_tokens"] == 4096
+
+
+def test_api_run_without_a_cap_for_the_model_is_refused_before_any_stage(sandbox):
+    generation = write_generation(sandbox, other={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation)
+    with pytest.raises(SystemExit, match="no max_new_tokens for case 'th_text' and model 'x'"):
+        safety_suite.main(argv, run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
+
+
+def test_api_run_for_an_unpriced_model_is_refused(sandbox):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, "--backend", "api", "--model", "Unpriced 1B", "--max-thb", "40", "--generation-config", generation)
+    with pytest.raises(SystemExit, match="no price for model 'Unpriced 1B'"):
+        safety_suite.main(argv, run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
+
+
+def test_each_case_is_forwarded_its_own_cap(sandbox, monkeypatch):
+    other = sandbox / "over_refusal.jsonl"
+    other.write_text("".join(json.dumps({"id": f"xstest_{i}"}) + "\n" for i in range(4)), encoding="utf-8")
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "over_refusal", CaseRunner(other, "score_over_refusal", "string_match"))
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}, "over_refusal": {"max_new_tokens": 1024}})
+    seen = {}
+
+    def stages(cmd, log_path):
+        if cmd[1] == "model_wrapper.py":
+            seen[Path(cmd[cmd.index("--out") + 1]).name] = cmd[cmd.index("--max-new-tokens") + 1]
+        return fake_stages(cmd, log_path)
+
+    both = sandbox / "both.json"
+    both.write_text(json.dumps({"provisional": True, "cases": {
+        "th_text": {"threshold": 0.2, "min_scored": 1}, "over_refusal": {"threshold": 0.2, "min_scored": 1}}}))
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--only", "th_text,over_refusal",
+                   "--thresholds", str(both), languages=("en", "th"))
+    safety_suite.main(argv, run_stage=stages, interactive=False)
+    assert seen == {"responses_th_text.jsonl": "4096", "responses_over_refusal.jsonl": "1024"}
+
+
+def test_dry_run_prints_spend_bounds_and_writes_nothing(sandbox, capsys):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--dry-run")
+    result = safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    out = capsys.readouterr().out
+    assert result is None
+    assert "spend bounds (Mango 1.5-9B" in out and "th_text" in out and "4,096" in out
+    assert "expected is n/a" in out and "--max-thb 40" in out and "Dry run: nothing was sent" in out
+    assert not (sandbox / "results").exists() and not (sandbox / "_index.md").exists()
+
+
+def test_dry_run_shows_the_expected_spend_from_a_calibration_file(sandbox, capsys):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    calibration = sandbox / "calibration.json"
+    calibration.write_text(json.dumps({
+        "model": "Mango 1.5-9B",
+        "cases": {"th_text": {"mean_prompt_tokens": 100, "mean_completion_tokens": 1000}},
+    }), encoding="utf-8")
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--dry-run",
+                   "--calibration-file", str(calibration))
+    safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    out = capsys.readouterr().out
+    # 4 prompts x (100 x input price + 1000 x output price) / 1e6 THB
+    assert "0.03" in out and "expected is n/a" not in out
+
+
+def test_dry_run_rejects_a_calibration_file_for_another_model(sandbox):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    calibration = sandbox / "calibration.json"
+    calibration.write_text(json.dumps({"model": "Qwen 3.8-27B", "cases": {}}), encoding="utf-8")
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--dry-run",
+                   "--calibration-file", str(calibration))
+    with pytest.raises(SystemExit, match="is for model 'Qwen 3.8-27B'"):
+        safety_suite.main(argv, run_stage=lambda *a: None, interactive=False)
+
+
+def test_resume_reuses_the_run_folder_and_forwards_resume(sandbox):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    run_dir = sandbox / "results" / "earlier"
+    run_dir.mkdir(parents=True)
+    commands = []
+
+    def stages(cmd, log_path):
+        commands.append(cmd)
+        return fake_stages(cmd, log_path)
+
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--resume", str(run_dir))
+    verdict = safety_suite.main(argv, run_stage=stages, interactive=False)
+    wrapper_cmd = next(c for c in commands if c[1] == "model_wrapper.py")
+    assert "--resume" in wrapper_cmd
+    assert wrapper_cmd[wrapper_cmd.index("--out") + 1] == str(run_dir / "responses_th_text.jsonl")
+    assert wrapper_cmd[wrapper_cmd.index("--spend-ledger") + 1] == str(run_dir / "spend_ledger.json")
+    assert (run_dir / "verdict.json").exists() and verdict["case_results"][0]["case_id"] == "th_text"
+
+
+def test_resume_of_a_missing_folder_is_a_suite_error(sandbox):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation,
+                   "--resume", str(sandbox / "nowhere"))
+    with pytest.raises(SystemExit, match="is not a run folder"):
+        safety_suite.main(argv, run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
 
 
 def test_summary_shows_the_effective_settings(sandbox, capsys):
@@ -475,4 +624,5 @@ def test_summary_shows_the_effective_settings(sandbox, capsys):
                       ask_factory=lambda: FakeAsk(confirm_answer=False))
     out = capsys.readouterr().out
     assert "precision as_published" in out and "batch 8" in out and "max_new_tokens 256" in out
+    assert "temperature 0, top_p 1 requested" in out
     assert "model@" + "a" * 12 in out
