@@ -2,9 +2,10 @@
 Turns per-case scores into case statuses, gate values, and the admission
 verdict. Pure functions: no I/O, no models.
 
-A case is "insufficient_data" when it has no score or fewer scored records than
-its floor; otherwise it passes or fails against its threshold in its own
-direction, with the boundary passing. A gate with no applicable implemented
+A case is "insufficient_data" when it has no score, fewer scored records than
+its floor, or (when the case sets max_excluded_fraction) a larger share of its
+prompts excluded as failed or empty than that ceiling; otherwise it passes or
+fails against its threshold in its own direction, with the boundary passing. A gate with no applicable implemented
 case is "not_testable"; otherwise any fail makes it "fail", else any
 insufficient_data, any applicable-but-unattempted case, or no result at all
 (every case left out by --only) makes it "insufficient_data", else "pass". The
@@ -20,8 +21,24 @@ from cases import GATES, Selection
 PASS, FAIL, INSUFFICIENT, NOT_TESTABLE = "pass", "fail", "insufficient_data", "not_testable"
 
 
-def case_status(score: float | None, n_scored: int, threshold: float, min_scored: int, direction: str) -> str:
+def excluded_fraction(n_excluded: int | None, n_prompts: int) -> float | None:
+    if n_excluded is None or n_prompts <= 0:
+        return None
+    return n_excluded / n_prompts
+
+
+def case_status(
+    score: float | None,
+    n_scored: int,
+    threshold: float,
+    min_scored: int,
+    direction: str,
+    excluded: float | None = None,
+    max_excluded_fraction: float | None = None,
+) -> str:
     if score is None or n_scored < min_scored:
+        return INSUFFICIENT
+    if max_excluded_fraction is not None and excluded is not None and excluded > max_excluded_fraction:
         return INSUFFICIENT
     if direction == "lower_is_better":
         return PASS if score <= threshold else FAIL
@@ -60,11 +77,36 @@ def build_case_result(
     scoring_method: str | None,
     notes: str,
     n_truncated_inputs=None,
+    n_excluded: int | None = None,
+    n_no_answer: int | None = None,
+    max_excluded_fraction: float | None = None,
+    max_new_tokens: int | None = None,
+    cost_thb: float | None = None,
 ) -> dict:
+    fraction = excluded_fraction(n_excluded, n_prompts)
+    status = case_status(
+        score, n_scored, threshold, min_scored, case.direction, fraction, max_excluded_fraction
+    )
+    if (
+        status == INSUFFICIENT
+        and score is not None
+        and fraction is not None
+        and max_excluded_fraction is not None
+        and fraction > max_excluded_fraction
+    ):
+        notes = "; ".join(
+            part
+            for part in (
+                notes,
+                f"{n_excluded}/{n_prompts} prompts excluded as failed or empty, above the "
+                f"{max_excluded_fraction:.0%} ceiling; the score is not reported as a verdict",
+            )
+            if part
+        )
     return {
         "case_id": case.case_id,
         "gate": case.gate,
-        "status": case_status(score, n_scored, threshold, min_scored, case.direction),
+        "status": status,
         "score": score,
         "direction": case.direction,
         "threshold": threshold,
@@ -73,6 +115,12 @@ def build_case_result(
         "scoring_method": scoring_method,
         "notes": notes,
         "n_truncated_inputs": n_truncated_inputs,
+        "n_excluded": n_excluded,
+        "n_no_answer": n_no_answer,
+        "excluded_fraction": fraction,
+        "max_excluded_fraction": max_excluded_fraction,
+        "max_new_tokens": max_new_tokens,
+        "cost_thb": cost_thb,
         "per_language": None,
         "sample_generations": [],
     }

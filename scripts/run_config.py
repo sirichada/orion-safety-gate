@@ -34,7 +34,17 @@ DEFAULTS = {
     "top_p": 1.0,
     "max_new_tokens": 256,
     "max_input_tokens": 2048,
+    # API backend only. Retries re-spend a reply's tokens, so an empty cut-off reply is excluded, not re-requested.
+    "api_batch_size": 12,
+    "api_concurrency": 3,
+    "no_answer_retries": 0,
 }
+
+# The key allows this many requests in flight; no setting may exceed it.
+API_CONCURRENCY_CEILING = 3
+
+# Caps that legitimately differ between cases; every other tested field must agree.
+PER_CASE_FIELDS = ("max_new_tokens", "max_input_tokens")
 
 PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system_prompt": "none"}
 
@@ -71,12 +81,76 @@ class PrecisionError(ValueError):
     """The requested precision cannot be applied to this checkpoint."""
 
 
+class GenerationConfigError(ValueError):
+    """A case has no usable generation cap for this model and backend."""
+
+
+class GenerationAborted(RuntimeError):
+    """The api backend raised something unexpected; the run stops rather than re-sending paid requests."""
+
+
+class BudgetExceeded(RuntimeError):
+    """The next request's worst case would take the run past its spend limit."""
+
+
 def unavailable(reason: str) -> dict:
     return {"available": False, "reason": reason}
 
 
 def sidecar_path(responses_path) -> Path:
     return Path(str(responses_path) + SIDECAR_SUFFIX)
+
+
+# -------------------------------------------------------- generation caps
+
+
+def load_generation_config(path) -> dict | None:
+    """The per-case, per-model cap table, or None when the file does not exist.
+
+    {"cases": {case_id: {"max_new_tokens": int, "max_input_tokens": int}},
+     "models": {model_id: {case_id: {"max_new_tokens": int, ...}}}}
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise GenerationConfigError(f"{path} is not valid JSON: {e}") from e
+    if not isinstance(config, dict):
+        raise GenerationConfigError(f"{path} must hold a JSON object")
+    return config
+
+
+def resolve_generation(config: dict | None, case_id: str, model_id: str, backend: str) -> dict:
+    """max_new_tokens and max_input_tokens for one case.
+
+    A model entry wins over the case default. The api backend has no fallback: a case with no
+    model entry is refused, so a cap is always a recorded decision and never a leftover default.
+    """
+    config = config or {}
+    model_entry = (config.get("models", {}).get(model_id) or {}).get(case_id) or {}
+    case_entry = (config.get("cases") or {}).get(case_id) or {}
+    if backend == "api":
+        cap = model_entry.get("max_new_tokens")
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+            raise GenerationConfigError(
+                f"no max_new_tokens for case {case_id!r} and model {model_id!r} in the generation config; "
+                "run the calibration tool and add models[model][case] before an api run"
+            )
+        return {"max_new_tokens": cap, "max_input_tokens": None}
+    resolved = {}
+    for name in PER_CASE_FIELDS:
+        value = model_entry.get(name, case_entry.get(name, DEFAULTS[name]))
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise GenerationConfigError(f"{name} for case {case_id!r} must be a positive integer, got {value!r}")
+        resolved[name] = value
+    return resolved
+
+
+def generation_sha256(resolved: dict) -> str:
+    """Hash of the resolved caps of one run, independent of unrelated entries in the file."""
+    return hashlib.sha256(json.dumps(resolved, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------- precision
@@ -367,6 +441,17 @@ def _lookup(report: dict, dotted: str):
     return value
 
 
+def tested_mismatches(a: dict, b: dict) -> list[str]:
+    """Names of the TESTED_FIELDS on which two stage reports differ, caps included."""
+    return [field for field in TESTED_FIELDS if _lookup(a, field) != _lookup(b, field)]
+
+
+def _comparable(value, field: str):
+    if field in ("args", "per_model") and isinstance(value, dict):
+        return {k: v for k, v in value.items() if k not in PER_CASE_FIELDS}
+    return value
+
+
 def check_forwarded(forwarded: dict, report: dict) -> list[str]:
     """Arguments the suite forwarded that the wrapper did not report using as given."""
     reported = report.get("args", {})
@@ -380,7 +465,9 @@ def check_forwarded(forwarded: dict, report: dict) -> list[str]:
 def merge_reports(reports: dict) -> tuple[dict, list[dict], list[dict]]:
     """Returns (baseline report, tested-field mismatches, environment-field mismatches).
 
-    The first case is the baseline. n_truncated_inputs is per case and is not compared.
+    The first case is the baseline. n_truncated_inputs is per case and is not compared, and
+    PER_CASE_FIELDS are left out of the args/per_model comparison (each is checked against the
+    cap table by check_forwarded instead).
     """
     if not reports:
         raise ValueError("no stage reports to merge")
@@ -390,7 +477,7 @@ def merge_reports(reports: dict) -> tuple[dict, list[dict], list[dict]]:
     flags: list[dict] = []
     for fields, bucket in ((TESTED_FIELDS, errors), (ENVIRONMENT_FIELDS, flags)):
         for field in fields:
-            values = {case_id: _lookup(reports[case_id], field) for case_id in ids}
+            values = {case_id: _comparable(_lookup(reports[case_id], field), field) for case_id in ids}
             first = values[ids[0]]
             if any(value != first for value in values.values()):
                 bucket.append({"field": field, "values": values})

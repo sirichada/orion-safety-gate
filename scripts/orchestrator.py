@@ -9,7 +9,11 @@ sidecar; that case is recorded as insufficient_data and scoring is skipped.
 A generation that cannot load the model with the requested precision or
 revision exits with model_wrapper.CONFIG_ERROR_EXIT_CODE and leaves a
 <responses>.error.json sidecar; its message becomes the suite error and the
-sidecar is removed. Any other failure, including either exit code without its
+sidecar is removed. A generation that reaches its spend limit exits with
+model_wrapper.BUDGET_EXIT_CODE and a <responses>.budget.json sidecar; that is a
+suite error too, and the responses written so far are kept for --resume. An api generation
+stopped by an unexpected error exits with model_wrapper.ABORTED_EXIT_CODE and a
+<responses>.aborted.json sidecar, handled the same way. Any other failure, including either exit code without its
 sidecar, is a suite error and stops the whole run.
 
 Every generation stage also leaves <responses>.run_config.json (see run_config.py);
@@ -41,6 +45,12 @@ STOPPED_NO_ANSWER_EXIT_CODE = 3
 
 # Kept equal to model_wrapper.CONFIG_ERROR_EXIT_CODE for the same reason.
 CONFIG_ERROR_EXIT_CODE = 4
+
+# Kept equal to model_wrapper.BUDGET_EXIT_CODE for the same reason.
+BUDGET_EXIT_CODE = 5
+
+# Kept equal to model_wrapper.ABORTED_EXIT_CODE for the same reason.
+ABORTED_EXIT_CODE = 6
 
 
 class SuiteError(RuntimeError):
@@ -139,6 +149,7 @@ def run_case(
     thresholds: dict,
     run_stage: RunStage = run_subprocess,
     timestamp: str | None = None,
+    generation: dict | None = None,
 ) -> dict:
     runner = CASE_RUNNERS[case.case_id]
     entry = thresholds["cases"][case.case_id]
@@ -149,6 +160,12 @@ def run_case(
     n_prompts = count_lines(runner.prompts)
 
     n_truncated_inputs = None
+    generation_report = {
+        "max_new_tokens": (generation or {}).get("max_new_tokens"),
+        "n_excluded": None,
+        "n_no_answer": None,
+        "cost_thb": None,
+    }
 
     def result(score, n_scored, notes, scoring_method):
         return build_case_result(
@@ -161,10 +178,28 @@ def run_case(
             scoring_method=scoring_method,
             notes=notes,
             n_truncated_inputs=n_truncated_inputs,
+            max_excluded_fraction=entry.get("max_excluded_fraction"),
+            **generation_report,
         )
 
     gen_cmd = [sys.executable, "model_wrapper.py", "--prompts", str(runner.prompts), "--out", str(responses), *wrapper_args]
     code = run_stage(gen_cmd, LOGS / f"model_wrapper_{case.case_id}_{stamp}.log")
+    budget_sidecar = Path(str(responses) + ".budget.json")
+    if code == BUDGET_EXIT_CODE and budget_sidecar.exists():
+        stop = json.loads(budget_sidecar.read_text(encoding="utf-8"))
+        budget_sidecar.unlink()
+        raise SuiteError(
+            f"{case.case_id}: spend limit reached after {stop['n_completed']}/{stop['n_prompts']} prompts "
+            f"({stop['reason']}); the responses so far are kept in {responses.parent}, continue with --resume"
+        )
+    aborted_sidecar = Path(str(responses) + ".aborted.json")
+    if code == ABORTED_EXIT_CODE and aborted_sidecar.exists():
+        stop = json.loads(aborted_sidecar.read_text(encoding="utf-8"))
+        aborted_sidecar.unlink()
+        raise SuiteError(
+            f"{case.case_id}: generation aborted after {stop['n_completed']}/{stop['n_prompts']} prompts "
+            f"({stop['reason']}); the responses so far are kept in {responses.parent}, continue with --resume"
+        )
     if code == STOPPED_NO_ANSWER_EXIT_CODE and sidecar.exists():
         n_truncated_inputs = read_run_config(responses, case.case_id)["n_truncated_inputs"]
         stop = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -190,4 +225,13 @@ def run_case(
         raise SuiteError(f"{case.case_id}: scoring exited with code {code}")
 
     summary = _aggregate(runner.scorer, read_jsonl(scored))
+    generated = read_jsonl(responses)
+    generation_report["n_excluded"] = summary.get("n_generation_failed")
+    generation_report["n_no_answer"] = sum(1 for r in generated if r.get("no_answer")) if _has_api_fields(generated) else None
+    costs = [r["cost_thb"] for r in generated if r.get("cost_thb") is not None]
+    generation_report["cost_thb"] = round(sum(costs), 6) if costs else None
     return result(summary["score"], summary["n_scored"], summary.get("notes", ""), runner.scoring_method)
+
+
+def _has_api_fields(records: list[dict]) -> bool:
+    return any("no_answer" in r for r in records)

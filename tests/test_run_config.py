@@ -216,3 +216,58 @@ def test_gpu_info_with_and_without_a_device():
     assert run_config.gpu_info(torch, no_smi)["driver"]["available"] is False
     cpu = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
     assert run_config.gpu_info(cpu) == {"device": "cpu"}
+
+
+def test_per_case_caps_may_differ_but_other_settings_may_not():
+    a = stage_report_for(["--model", "m", "--max-new-tokens", "256", "--max-input-tokens", "2048"])
+    b = stage_report_for(["--model", "m", "--max-new-tokens", "1024", "--max-input-tokens", "4096"])
+    _, errors, _ = run_config.merge_reports({"x": a, "y": b})
+    assert errors == []
+    c = stage_report_for(["--model", "m", "--temperature", "0.7"])
+    _, errors, _ = run_config.merge_reports({"x": a, "y": c})
+    assert [e["field"] for e in errors] == ["args"]
+
+
+def test_tested_mismatches_include_the_caps():
+    a = stage_report_for(["--model", "m", "--max-new-tokens", "256"])
+    b = stage_report_for(["--model", "m", "--max-new-tokens", "512"])
+    assert run_config.tested_mismatches(a, a) == []
+    assert run_config.tested_mismatches(a, b) == ["args", "per_model"]
+
+
+TABLE = {
+    "cases": {"en_text": {"max_new_tokens": 300, "max_input_tokens": 1500}},
+    "models": {"Mango": {"en_text": {"max_new_tokens": 4096}, "th_text": {"max_new_tokens": 2048}}},
+}
+
+
+def test_hf_caps_fall_back_to_case_defaults_then_protocol_defaults():
+    assert run_config.resolve_generation(TABLE, "en_text", "other", "hf") == {"max_new_tokens": 300, "max_input_tokens": 1500}
+    assert run_config.resolve_generation(TABLE, "en_text", "Mango", "hf") == {"max_new_tokens": 4096, "max_input_tokens": 1500}
+    assert run_config.resolve_generation(None, "th_text", "x", "hf") == {"max_new_tokens": 256, "max_input_tokens": 2048}
+
+
+def test_api_caps_have_no_fallback():
+    assert run_config.resolve_generation(TABLE, "th_text", "Mango", "api") == {"max_new_tokens": 2048, "max_input_tokens": None}
+    for table, case, model in ((TABLE, "over_refusal", "Mango"), (TABLE, "en_text", "other"), (None, "en_text", "Mango")):
+        with pytest.raises(run_config.GenerationConfigError, match="no max_new_tokens"):
+            run_config.resolve_generation(table, case, model, "api")
+    bad = {"models": {"Mango": {"en_text": {"max_new_tokens": True}}}}
+    with pytest.raises(run_config.GenerationConfigError):
+        run_config.resolve_generation(bad, "en_text", "Mango", "api")
+
+
+def test_generation_config_file_loading(tmp_path):
+    assert run_config.load_generation_config(tmp_path / "missing.json") is None
+    path = tmp_path / "g.json"
+    path.write_text(json.dumps(TABLE), encoding="utf-8")
+    assert run_config.load_generation_config(path) == TABLE
+    path.write_text("{oops", encoding="utf-8")
+    with pytest.raises(run_config.GenerationConfigError):
+        run_config.load_generation_config(path)
+
+
+def test_generation_hash_depends_only_on_the_resolved_caps():
+    one = {"en_text": {"max_new_tokens": 4096, "max_input_tokens": None}}
+    assert run_config.generation_sha256(one) == run_config.generation_sha256(dict(one))
+    assert run_config.generation_sha256(one) != run_config.generation_sha256({"en_text": {"max_new_tokens": 2048, "max_input_tokens": None}})

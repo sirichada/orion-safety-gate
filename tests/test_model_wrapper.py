@@ -112,23 +112,221 @@ def test_api_backend_rejects_hf_only_settings(wrapper):
         wrapper.run("--backend", "api", "--model-revision", "main")
 
 
-def test_api_backend_reports_server_side_values_as_unavailable(wrapper, monkeypatch):
-    fake_api = SimpleNamespace(BASE_URL="https://api.example/v1")
-    monkeypatch.setitem(sys.modules, "api_model", fake_api)
+class FakeApi:
+    """Stands in for scripts/api_model.py: records calls, and can fail prompts or run out of budget."""
 
-    def make_api_generate(model_id, max_workers=8):
-        def generate(prompts, *a, **k):
-            generate.finish_reasons = ["stop"] * len(prompts)
-            generate.attempts = [1] * len(prompts)
-            return ["answer"] * len(prompts)
+    BASE_URL = "https://api.example/v1"
 
-        generate.finish_reasons, generate.attempts = [], []
-        return generate
+    def __init__(self):
+        self.calls = []
+        self.guards = []
+        self.fail_texts = set()
+        self.length_texts = set()
+        self.budget_error_on_call = None
+        self.error_on_call = None
+        self.make_kwargs = None
 
-    fake_api.make_api_generate = make_api_generate
-    wrapper.run("--out", str(wrapper.out), "--backend", "api")
+    def install(self, monkeypatch):
+        api = self
+
+        class SpendGuard:
+            def __init__(self, model, limit_thb, ledger_path=None):
+                self.model, self.limit_thb, self.ledger_path = model, limit_thb, ledger_path
+                api.guards.append(self)
+
+        def make_api_generate(model_id, concurrency=3, base_url=None, no_answer_retries=0, spend=None, transport=None):
+            api.make_kwargs = {"concurrency": concurrency, "no_answer_retries": no_answer_retries, "spend": spend}
+
+            def generate(prompts, max_new_tokens, temperature, top_p, seed=None, chat_template=None):
+                api.calls.append(list(prompts))
+                if api.budget_error_on_call is not None and len(api.calls) == api.budget_error_on_call:
+                    raise run_config.BudgetExceeded("spend limit 1 THB reached")
+                if api.error_on_call is not None and len(api.calls) == api.error_on_call:
+                    raise PermissionError("ledger is locked")
+                texts, metas = [], []
+                for prompt in prompts:
+                    failed = prompt in api.fail_texts
+                    cut = prompt in api.length_texts
+                    texts.append("" if failed or cut else "answer")
+                    metas.append({
+                        "finish_reason": None if failed else ("length" if cut else "stop"),
+                        "attempts": 1,
+                        "prompt_tokens": 5,
+                        "completion_tokens": 7,
+                        "latency_s": 0.5,
+                        "cost_thb": 0.01,
+                        "reasoning_content": "thinking about " + prompt,
+                        "failed": failed,
+                        "error": "HTTP 400: bad" if failed else None,
+                    })
+                generate.meta = metas
+                generate.finish_reasons = [m["finish_reason"] for m in metas]
+                generate.attempts = [m["attempts"] for m in metas]
+                return texts
+
+            generate.meta, generate.finish_reasons, generate.attempts = [], [], []
+            return generate
+
+        module = SimpleNamespace(BASE_URL=self.BASE_URL, make_api_generate=make_api_generate, SpendGuard=SpendGuard)
+        monkeypatch.setitem(sys.modules, "api_model", module)
+        return self
+
+
+@pytest.fixture
+def fake_api(monkeypatch):
+    return FakeApi().install(monkeypatch)
+
+
+def read_jsonl(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_api_backend_reports_server_side_values_as_unavailable(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
     report = run_config.read_stage_report(wrapper.out)
     assert report["precision"]["available"] is False
     assert report["provenance"]["api"]["base_url"] == "https://api.example/v1"
     assert report["n_truncated_inputs"]["available"] is False
+    assert report["args"]["api_concurrency"] == 3 and report["args"]["no_answer_retries"] == 0
+    assert report["args"]["stream"] is True
+    assert fake_api.make_kwargs["concurrency"] == 3 and fake_api.make_kwargs["no_answer_retries"] == 0
+    assert fake_api.guards[0].limit_thb == 5.0
     assert wrapper.loads == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],  # --max-thb is required
+        ["--max-thb", "0"],
+        ["--max-thb", "5", "--api-concurrency", "4"],
+        ["--max-thb", "5", "--api-concurrency", "0"],
+    ],
+)
+def test_api_backend_needs_a_spend_limit_and_at_most_three_in_flight(wrapper, fake_api, extra):
+    with pytest.raises(SystemExit):
+        wrapper.run("--backend", "api", *extra)
+    assert fake_api.calls == []
+
+
+def test_spend_limit_is_api_only_and_resume_needs_out(wrapper):
+    with pytest.raises(SystemExit):
+        wrapper.run("--max-thb", "5")
+    with pytest.raises(SystemExit):
+        wrapper.run("--resume")
+
+
+def test_api_records_carry_usage_and_the_trace_goes_to_a_sidecar(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--batch-size", "2", "--max-new-tokens", "64")
+    records = read_jsonl(wrapper.out)
+    assert [r["id"] for r in records] == ["p0", "p1", "p2", "p3"]
+    first = records[0]
+    assert first["response"] == "answer" and first["generation_failed"] is False and first["no_answer"] is False
+    assert first["finish_reason"] == "stop" and first["attempts"] == 1 and first["cap_used"] == 64
+    assert first["usage"] == {"prompt_tokens": 5, "completion_tokens": 7}
+    assert first["latency_s"] == 0.5 and first["cost_thb"] == 0.01
+    assert all("reasoning_content" not in r and "thinking" not in r["response"] for r in records)
+    sidecar = read_jsonl(wrapper.out.parent / "responses.jsonl.reasoning.jsonl")
+    assert [(e["index"], e["id"]) for e in sidecar] == [(0, "p0"), (1, "p1"), (2, "p2"), (3, "p3")]
+    assert sidecar[2]["reasoning_content"] == "thinking about q2"
+    assert [len(c) for c in fake_api.calls] == [2, 2]
+
+
+def test_a_failed_prompt_is_marked_without_resending_the_batch(wrapper, fake_api):
+    fake_api.fail_texts = {"q1"}
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
+    records = read_jsonl(wrapper.out)
+    assert [r["generation_failed"] for r in records] == [False, True, False, False]
+    assert records[1]["no_answer"] is False and records[1]["generation_error"] == "HTTP 400: bad"
+    assert len(fake_api.calls) == 1  # one batch, nothing re-sent per prompt
+
+
+def test_an_empty_reply_cut_off_at_the_cap_is_excluded_not_scored(wrapper, fake_api):
+    fake_api.length_texts = {"q2"}
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
+    records = read_jsonl(wrapper.out)
+    assert (records[2]["no_answer"], records[2]["generation_failed"]) == (True, True)
+    assert records[2]["finish_reason"] == "length"
+    assert [r["no_answer"] for r in records] == [False, False, True, False]
+
+
+def test_budget_stop_keeps_finished_batches_and_resume_continues_them(wrapper, fake_api):
+    argv = ["--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--batch-size", "2"]
+    fake_api.budget_error_on_call = 2
+    with pytest.raises(run_config.BudgetExceeded):
+        wrapper.run(*argv)
+    assert [r["id"] for r in read_jsonl(wrapper.out)] == ["p0", "p1"]
+    stop = json.loads((wrapper.out.parent / "responses.jsonl.budget.json").read_text(encoding="utf-8"))
+    assert stop["n_completed"] == 2 and stop["n_prompts"] == 4
+
+    fake_api.budget_error_on_call = None
+    fake_api.calls.clear()
+    wrapper.run(*argv, "--resume")
+    assert fake_api.calls == [["q2", "q3"]]
+    records = read_jsonl(wrapper.out)
+    assert [r["id"] for r in records] == ["p0", "p1", "p2", "p3"]
+    assert all(r["response"] == "answer" and r["usage"]["completion_tokens"] == 7 for r in records)
+    sidecar = read_jsonl(wrapper.out.parent / "responses.jsonl.reasoning.jsonl")
+    assert [e["index"] for e in sidecar] == [0, 1, 2, 3]
+
+
+def test_resume_refuses_a_run_with_different_settings(wrapper, fake_api):
+    argv = ["--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--batch-size", "2"]
+    fake_api.budget_error_on_call = 2
+    with pytest.raises(run_config.BudgetExceeded):
+        wrapper.run(*argv, "--max-new-tokens", "64")
+    fake_api.budget_error_on_call = None
+    with pytest.raises(SystemExit) as exit_info:
+        wrapper.run(*argv, "--max-new-tokens", "128", "--resume")
+    assert exit_info.value.code == model_wrapper.CONFIG_ERROR_EXIT_CODE
+    error = json.loads((wrapper.out.parent / "responses.jsonl.error.json").read_text(encoding="utf-8"))
+    assert error["kind"] == "ResumeMismatch" and "args" in error["message"]
+    assert [r["id"] for r in read_jsonl(wrapper.out)] == ["p0", "p1"]  # untouched
+
+
+def test_resume_drops_a_torn_final_line(wrapper, fake_api):
+    argv = ["--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--batch-size", "2"]
+    fake_api.budget_error_on_call = 2
+    with pytest.raises(run_config.BudgetExceeded):
+        wrapper.run(*argv)
+    with open(wrapper.out, "a", encoding="utf-8") as f:
+        f.write('{"id": "p2", "respon')
+    fake_api.budget_error_on_call = None
+    fake_api.calls.clear()
+    wrapper.run(*argv, "--resume")
+    assert fake_api.calls == [["q2", "q3"]]
+    assert len(read_jsonl(wrapper.out)) == 4
+
+
+def test_unexpected_api_error_stops_the_run_without_re_sending_the_batch(wrapper, fake_api):
+    argv = ["--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--batch-size", "2"]
+    fake_api.error_on_call = 2
+    with pytest.raises(run_config.GenerationAborted, match="PermissionError: ledger is locked"):
+        wrapper.run(*argv)
+    assert len(fake_api.calls) == 2  # no per-prompt fallback: the failing batch was not split and re-sent
+    assert [r["id"] for r in read_jsonl(wrapper.out)] == ["p0", "p1"]
+    stop = json.loads((wrapper.out.parent / "responses.jsonl.aborted.json").read_text(encoding="utf-8"))
+    assert stop["n_completed"] == 2 and stop["n_prompts"] == 4 and "PermissionError" in stop["reason"]
+
+    fake_api.error_on_call = None
+    fake_api.calls.clear()
+    wrapper.run(*argv, "--resume")
+    assert fake_api.calls == [["q2", "q3"]]
+    assert [r["id"] for r in read_jsonl(wrapper.out)] == ["p0", "p1", "p2", "p3"]
+
+
+def test_hf_backend_still_falls_back_to_per_prompt_on_an_unexpected_error(wrapper, monkeypatch):
+    calls = []
+
+    def flaky(prompts, *args, **kwargs):
+        calls.append(len(prompts))
+        if len(prompts) > 1:
+            raise RuntimeError("CUDA out of memory")
+        return ["answer"]
+
+    flaky.count_truncated = lambda prompts, chat_template=None: 0
+    monkeypatch.setattr(model_wrapper, "make_generate", lambda *a, **k: flaky)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)))
+    wrapper.run("--out", str(wrapper.out), "--batch-size", "4")
+    assert calls == [4, 1, 1, 1, 1]
+    assert all(r["response"] == "answer" for r in read_jsonl(wrapper.out))

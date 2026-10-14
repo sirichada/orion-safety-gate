@@ -35,6 +35,14 @@ STOPPED_NO_ANSWER_EXIT_CODE = 3
 # cannot be applied. Always paired with a <out>.error.json sidecar holding the message.
 CONFIG_ERROR_EXIT_CODE = 4
 
+# Exit code for a run stopped because the next request would pass --max-thb. Always paired with
+# a <out>.budget.json sidecar; the responses written so far are kept and --resume continues them.
+BUDGET_EXIT_CODE = 5
+
+# Exit code for an api run stopped by an unexpected error in generate(). Always paired with an
+# <out>.aborted.json sidecar; the batches already flushed are kept and --resume continues them.
+ABORTED_EXIT_CODE = 6
+
 
 class StoppedNoAnswer(RuntimeError):
     """Raised when consecutive batches produce no answer for any prompt."""
@@ -132,6 +140,7 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
     if api:
         import api_model
 
+        args_used.update(api_concurrency=args.api_concurrency, no_answer_retries=args.no_answer_retries, stream=True)
         server_side = run_config.unavailable("server-side chat template")
         return run_config.build_stage_report(
             args=args_used,
@@ -232,6 +241,25 @@ def main():
     )
     parser.add_argument("--out", default=None, help="Optional path to write responses JSONL to")
     parser.add_argument(
+        "--api-concurrency",
+        type=int,
+        default=run_config.DEFAULTS["api_concurrency"],
+        help=f"api backend: requests in flight at once, 1 to {run_config.API_CONCURRENCY_CEILING}",
+    )
+    parser.add_argument(
+        "--no-answer-retries",
+        type=int,
+        default=run_config.DEFAULTS["no_answer_retries"],
+        help="api backend: re-requests of a reply that came back empty at the token cap",
+    )
+    parser.add_argument("--max-thb", type=float, default=None, help="api backend: spend limit in THB for this run (required)")
+    parser.add_argument("--spend-ledger", default=None, help="api backend: JSON file holding the run's spend so far")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue the responses already in --out (same settings only) instead of starting over",
+    )
+    parser.add_argument(
         "--backend",
         choices=["hf", "api"],
         default="hf",
@@ -246,6 +274,17 @@ def main():
         args.precision = "full"
     if args.adapter_revision and not args.adapter:
         parser.error("--adapter-revision needs --adapter")
+    if args.resume and not args.out:
+        parser.error("--resume needs --out")
+    if args.backend == "api":
+        if not 1 <= args.api_concurrency <= run_config.API_CONCURRENCY_CEILING:
+            parser.error(f"--api-concurrency must be between 1 and {run_config.API_CONCURRENCY_CEILING}")
+        if args.no_answer_retries < 0:
+            parser.error("--no-answer-retries must be >= 0")
+        if args.max_thb is None or not args.max_thb > 0:
+            parser.error("--max-thb is required for --backend api and must be positive")
+    elif args.max_thb is not None or args.spend_ledger is not None:
+        parser.error("--max-thb/--spend-ledger apply only to the api backend")
 
     if args.backend == "api":
         if (
@@ -261,10 +300,19 @@ def main():
                 "--adapter/--precision/--no-4bit/--model-revision/--adapter-revision/--no-chat-template/"
                 "--chat-template/--max-input-tokens are hf-only"
             )
-        from api_model import make_api_generate
+        from api_model import SpendGuard, make_api_generate
 
         model = tokenizer = None
-        generate = make_api_generate(args.model, max_workers=args.batch_size)
+        try:
+            spend = SpendGuard(args.model, args.max_thb, args.spend_ledger)
+        except ValueError as e:
+            parser.error(str(e))
+        generate = make_api_generate(
+            args.model,
+            concurrency=args.api_concurrency,
+            no_answer_retries=args.no_answer_retries,
+            spend=spend,
+        )
     else:
         try:
             model, tokenizer = load_model(
@@ -286,15 +334,61 @@ def main():
 
     records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]
     prompts = [r["model_input"] for r in records]
+    api = args.backend == "api"
+
+    def config_error(kind: str, message: str) -> None:
+        print(f"Cannot start: {message}", file=sys.stderr)
+        if args.out:
+            error = {"kind": kind, "message": message}
+            Path(args.out + ".error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
+        sys.exit(CONFIG_ERROR_EXIT_CODE)
+
+    n_truncated = (
+        run_config.unavailable("server-side limit") if api else generate.count_truncated(prompts, args.chat_template)
+    )
+    report = build_report(args, model, tokenizer, n_truncated)
+    reasoning_path = Path(args.out + ".reasoning.jsonl") if args.out and api else None
+
+    # A resumed run continues the records already on disk, and only under the settings that wrote them.
+    start = 0
+    if args.resume and Path(args.out).exists():
+        try:
+            previous = run_config.read_stage_report(args.out)
+        except ValueError as e:
+            config_error("ResumeMismatch", f"cannot resume: {e}")
+        mismatched = run_config.tested_mismatches(previous, report)
+        if mismatched:
+            config_error(
+                "ResumeMismatch",
+                "cannot resume: settings differ from the run that wrote the file: " + ", ".join(mismatched),
+            )
+        kept = []
+        for line in Path(args.out).read_text(encoding="utf-8").splitlines():
+            try:
+                kept.append(json.loads(line))
+            except json.JSONDecodeError:
+                break  # a torn final line from an interrupted write
+        if len(kept) > len(records) or any(k.get("id") != r.get("id") for k, r in zip(kept, records)):
+            config_error("ResumeMismatch", "cannot resume: the responses on disk are not a prefix of these prompts")
+        start = len(kept)
+        records[:start] = kept
+        with open(args.out, "w", encoding="utf-8") as f:
+            for record in kept:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if reasoning_path is not None and reasoning_path.exists():
+            lines = [ln for ln in reasoning_path.read_text(encoding="utf-8").splitlines() if ln]
+            reasoning_path.write_text(
+                "".join(ln + "\n" for ln in lines if json.loads(ln)["index"] < start), encoding="utf-8"
+            )
+        print(f"Resuming: {start}/{len(records)} responses already written")
+    elif args.out:
+        Path(args.out).write_text("", encoding="utf-8")
+        if reasoning_path is not None:
+            reasoning_path.write_text("", encoding="utf-8")
 
     # Written before generating, so a stopped or killed run still states what it was run with.
     if args.out:
-        n_truncated = (
-            run_config.unavailable("server-side limit")
-            if args.backend == "api"
-            else generate.count_truncated(prompts, args.chat_template)
-        )
-        run_config.write_stage_report(args.out, build_report(args, model, tokenizer, n_truncated))
+        run_config.write_stage_report(args.out, report)
 
     def write_out(records_to_write: list[dict]) -> None:
         if args.out:
@@ -307,7 +401,7 @@ def main():
                 print(json.dumps(record, ensure_ascii=False))
 
     def clear_cuda_cache() -> None:
-        if args.backend == "api":
+        if api:
             return
         # Unguarded empty_cache() raises on CPU-only torch builds.
         import torch
@@ -315,14 +409,26 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # Populated only by backends that report per-generation metadata (api); both stay aligned with `responses`.
-    finish_reasons: list[str | None] = []
-    attempts: list[int | None] = []
+    # Populated only by the api backend; stays aligned with `responses`. Resumed records carry
+    # their own fields, so their entries are placeholders and are never re-filled.
+    metas: list[dict] = [{}] * start
+    finish_reasons: list[str | None] = [r.get("finish_reason") for r in records[:start]] if api else []
+    attempts: list[int | None] = [r.get("attempts") for r in records[:start]] if api else []
+    responses: list[str | None] = [
+        None if r.get("generation_failed") and not r.get("no_answer") else r.get("response", "")
+        for r in records[:start]
+    ]
+    failed = sum(1 for r in responses if r is None)
+    flushed = start
 
-    def collect_api_metadata(count: int, failed: bool = False) -> None:
-        if args.backend == "api":
-            finish_reasons.extend([None] * count if failed else generate.finish_reasons)
-            attempts.extend([None] * count if failed else generate.attempts)
+    def collect_api_metadata(batch_metas: list[dict]) -> None:
+        if api:
+            metas.extend(batch_metas)
+            finish_reasons.extend(m.get("finish_reason") for m in batch_metas)
+            attempts.extend(m.get("attempts") for m in batch_metas)
+
+    def failed_meta() -> dict:
+        return {"finish_reason": None, "attempts": None, "failed": True}
 
     def is_no_answer(response: str | None, finish: str | None) -> bool:
         return response is not None and not response.strip() and finish == "length"
@@ -330,12 +436,13 @@ def main():
     def answered(k: int) -> bool:
         if responses[k] is None:
             return False
-        return args.backend != "api" or not is_no_answer(responses[k], finish_reasons[k])
+        return not api or not is_no_answer(responses[k], finish_reasons[k])
 
     def fill_record(k: int, record: dict, response: str | None) -> None:
         record["response"] = response if response is not None else ""
         record["generation_failed"] = response is None
-        if args.backend == "api":
+        if api:
+            meta = metas[k]
             finish = finish_reasons[k]
             # An empty completion cut off at the token cap never answered: it must not be scored as a refusal.
             # generation_failed is the flag every scorer already excludes; no_answer keeps the cause distinguishable.
@@ -343,8 +450,39 @@ def main():
             record["finish_reason"] = finish
             record["attempts"] = attempts[k]
             record["no_answer"] = no_answer
+            record["cap_used"] = args.max_new_tokens
+            record["usage"] = {
+                "prompt_tokens": meta.get("prompt_tokens"),
+                "completion_tokens": meta.get("completion_tokens"),
+            }
+            record["latency_s"] = meta.get("latency_s")
+            record["cost_thb"] = meta.get("cost_thb")
+            if meta.get("failed"):
+                record["generation_error"] = meta.get("error")
             if no_answer:
                 record["generation_failed"] = True
+
+    def fill_new(upto: int) -> None:
+        for k in range(start, upto):
+            fill_record(k, records[k], responses[k])
+
+    def flush() -> None:
+        """Appends the records finished since the last flush, so an interrupted run keeps them."""
+        nonlocal flushed
+        if not args.out or flushed >= len(responses):
+            return
+        fill_new(len(responses))
+        if reasoning_path is not None:
+            with open(reasoning_path, "a", encoding="utf-8") as f:
+                for k in range(flushed, len(responses)):
+                    trace = metas[k].get("reasoning_content")
+                    if trace:
+                        entry = {"index": k, "id": records[k].get("id"), "reasoning_content": trace}
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with open(args.out, "a", encoding="utf-8") as f:
+            for k in range(flushed, len(responses)):
+                f.write(json.dumps(records[k], ensure_ascii=False) + "\n")
+        flushed = len(responses)
 
     # A failed generation is None, not "" -- an empty string is a real, scoreable
     # output (e.g. immediate EOS), not an infra failure.
@@ -353,16 +491,16 @@ def main():
             return generate(
                 [prompt], args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
             )[0]
+        except run_config.BudgetExceeded:
+            raise
         except Exception as e:
             print(f"WARNING: generation failed for record {record_id!r}: {e}")
             return None
 
-    responses: list[str | None] = []
-    failed = 0
     # Only unbroken runs of fully-failed batches count; scattered failures never abort.
     consecutive_failed_batches = 0
     try:
-        for i in range(0, len(prompts), args.batch_size):
+        for i in range(start, len(prompts), args.batch_size):
             batch = prompts[i : i + args.batch_size]
             # Only generate() sits inside the try: anything that raised after responses grew would
             # re-append the batch on retry and misalign every later record.
@@ -370,7 +508,13 @@ def main():
                 batch_responses = generate(
                     batch, args.max_new_tokens, args.temperature, args.top_p, args.seed, args.chat_template
                 )
+            except run_config.BudgetExceeded:
+                raise
             except Exception as e:
+                if api:
+                    # Every reply in this batch may already have been paid for; re-sending
+                    # them one by one would pay again. Stop and let --resume continue.
+                    raise run_config.GenerationAborted(f"{type(e).__name__}: {e}") from e
                 # Likely OOM -- clear cache and retry per-prompt so only the
                 # actually oversized prompt(s) get marked failed.
                 print(f"WARNING: batch {i}-{i + len(batch)} failed ({e}); clearing cache and retrying per-prompt")
@@ -379,12 +523,20 @@ def main():
                     record_id = records[i + j].get("id", i + j)
                     response = generate_one_prompt(prompt, record_id)
                     responses.append(response)
-                    collect_api_metadata(1, failed=response is None)
                     if response is None:
                         failed += 1
+                    if api:
+                        single = generate.meta if response is not None and generate.meta else [failed_meta()]
+                        collect_api_metadata(list(single))
             else:
+                if api:
+                    # The api backend reports a request that exhausted its retries per prompt, so one
+                    # failure never re-sends the batch's other (already paid for) replies.
+                    batch_responses = [None if m.get("failed") else r for r, m in zip(batch_responses, generate.meta)]
+                    failed += sum(1 for r in batch_responses if r is None)
+                    collect_api_metadata(list(generate.meta))
                 responses.extend(batch_responses)
-                collect_api_metadata(len(batch))
+            flush()
 
             batch_answered = any(answered(k) for k in range(i, len(responses)))
             consecutive_failed_batches = 0 if batch_answered else consecutive_failed_batches + 1
@@ -398,10 +550,8 @@ def main():
                 )
     except RuntimeError as e:
         # Preserve partial output before propagating the abort.
-        partial_records = records[: len(responses)]
-        for k, (record, response) in enumerate(zip(partial_records, responses)):
-            fill_record(k, record, response)
-        write_out(partial_records)
+        fill_new(len(responses))
+        write_out(records[: len(responses)])
         if isinstance(e, StoppedNoAnswer) and args.out:
             sidecar = {
                 "reason": str(e),
@@ -411,16 +561,21 @@ def main():
                 "max_consecutive_failures": args.max_consecutive_failures,
             }
             Path(args.out + ".stopped.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+        if isinstance(e, run_config.BudgetExceeded) and args.out:
+            sidecar = {"reason": str(e), "n_prompts": len(prompts), "n_completed": len(responses)}
+            Path(args.out + ".budget.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+        if isinstance(e, run_config.GenerationAborted) and args.out:
+            sidecar = {"reason": str(e), "n_prompts": len(prompts), "n_completed": len(responses)}
+            Path(args.out + ".aborted.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
         raise
 
-    for k, (record, response) in enumerate(zip(records, responses)):
-        fill_record(k, record, response)
+    fill_new(len(responses))
 
     if failed:
         print(f"WARNING: {failed}/{len(prompts)} prompts had failed generations")
-    if args.backend == "api":
-        n_no_answer = sum(r["no_answer"] for r in records)
-        retried = [r for r in records if (r["attempts"] or 1) > 1]
+    if api:
+        n_no_answer = sum(r.get("no_answer", False) for r in records)
+        retried = [r for r in records if (r.get("attempts") or 1) > 1]
         print(f"finish_reason counts: {dict(Counter(finish_reasons))}")
         print(f"attempts per record: {dict(sorted(Counter(attempts).items(), key=lambda kv: (kv[0] is None, kv[0])))}")
         print(
@@ -431,6 +586,8 @@ def main():
             f"no_answer (still empty at finish_reason=length after all attempts): {n_no_answer}/{len(records)} "
             "-- flagged generation_failed so scorers exclude them from the rate"
         )
+        total_cost = sum(r.get("cost_thb") or 0.0 for r in records)
+        print(f"computed cost of this case: {total_cost:.4f} THB")
 
     # generate() closes over model/tokenizer -- drop it before unloading.
     del generate
@@ -447,3 +604,9 @@ if __name__ == "__main__":
     except StoppedNoAnswer as e:
         print(str(e), file=sys.stderr)
         sys.exit(STOPPED_NO_ANSWER_EXIT_CODE)
+    except run_config.BudgetExceeded as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(BUDGET_EXIT_CODE)
+    except run_config.GenerationAborted as e:
+        print(f"Aborting: {e}", file=sys.stderr)
+        sys.exit(ABORTED_EXIT_CODE)

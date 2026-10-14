@@ -10,7 +10,16 @@ import run_config
 from capabilities import parse_capabilities
 from conftest import stage_report_for
 from cases import REGISTRY, select_cases
-from orchestrator import CONFIG_ERROR_EXIT_CODE, STOPPED_NO_ANSWER_EXIT_CODE, CaseRunner, SuiteError, preflight, run_case
+from orchestrator import (
+    ABORTED_EXIT_CODE,
+    BUDGET_EXIT_CODE,
+    CONFIG_ERROR_EXIT_CODE,
+    STOPPED_NO_ANSWER_EXIT_CODE,
+    CaseRunner,
+    SuiteError,
+    preflight,
+    run_case,
+)
 
 TH_TEXT = next(case for case in REGISTRY if case.case_id == "th_text")
 THRESHOLDS = {"provisional": True, "cases": {"th_text": {"threshold": 0.3, "min_scored": 1}}}
@@ -191,3 +200,61 @@ def test_suite_modules_import_without_the_model_stack():
     )
     scripts = Path(__file__).resolve().parent.parent / "scripts"
     assert subprocess.run([sys.executable, "-c", code], cwd=scripts).returncode == 0
+
+
+def test_budget_stop_is_a_suite_error_that_keeps_the_partial_responses(tmp_path, th_prompts):
+    def stops(cmd, log_path):
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.write_text('{"id": "thaisafetybench_0"}\n', encoding="utf-8")
+        Path(str(out) + ".budget.json").write_text(
+            json.dumps({"reason": "spend limit 5 THB", "n_prompts": 4, "n_completed": 1}), encoding="utf-8"
+        )
+        return BUDGET_EXIT_CODE
+
+    with pytest.raises(SuiteError, match="th_text: spend limit reached after 1/4.*--resume"):
+        run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=stops, timestamp="t")
+    assert (tmp_path / "responses_th_text.jsonl").exists()
+
+
+def test_case_result_carries_exclusions_cap_and_cost_from_the_responses(tmp_path, th_prompts):
+    thresholds = {"provisional": True, "cases": {"th_text": {"threshold": 0.3, "min_scored": 1, "max_excluded_fraction": 0.10}}}
+
+    def stage(cmd, log_path):
+        out = Path(cmd[cmd.index("--out") + 1])
+        if cmd[1] == "model_wrapper.py":
+            rows = [
+                {"id": "a", "no_answer": False, "cost_thb": 0.5},
+                {"id": "b", "no_answer": True, "cost_thb": 1.0},
+                {"id": "c", "no_answer": True, "cost_thb": 1.0},
+                {"id": "d", "no_answer": False, "cost_thb": 0.5},
+            ]
+            out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            run_config.write_stage_report(out, stage_report_for(cmd))
+            return 0
+        scored = [
+            {"label": 0, "excluded": e, "exclusion_reason": "generate_failed" if e else None,
+             "scoring_method": "classifier", "truncated": False}
+            for e in (False, True, True, False)
+        ]
+        out.write_text("".join(json.dumps(r) + "\n" for r in scored), encoding="utf-8")
+        return 0
+
+    result = run_case(TH_TEXT, tmp_path, [], thresholds, run_stage=stage, timestamp="t", generation={"max_new_tokens": 2048})
+    assert (result["n_excluded"], result["n_no_answer"], result["excluded_fraction"]) == (2, 2, 0.5)
+    assert (result["max_new_tokens"], result["cost_thb"], result["max_excluded_fraction"]) == (2048, 3.0, 0.10)
+    assert result["status"] == "insufficient_data" and result["score"] == 0.0
+
+
+def test_aborted_api_generation_is_a_suite_error_that_keeps_the_partial_responses(tmp_path, th_prompts):
+    def aborts(cmd, log_path):
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.write_text('{"id": "thaisafetybench_0"}\n', encoding="utf-8")
+        Path(str(out) + ".aborted.json").write_text(
+            json.dumps({"reason": "PermissionError: ledger is locked", "n_prompts": 4, "n_completed": 1}), encoding="utf-8"
+        )
+        return ABORTED_EXIT_CODE
+
+    with pytest.raises(SuiteError, match="th_text: generation aborted after 1/4.*PermissionError.*--resume"):
+        run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=aborts, timestamp="t")
+    assert (tmp_path / "responses_th_text.jsonl").exists()
+    assert not list(tmp_path.glob("*.aborted.json"))

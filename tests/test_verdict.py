@@ -208,3 +208,33 @@ def test_partial_run_of_a_gate_with_no_applicable_case_stays_not_testable():
 def test_partial_verdict_round_trips_through_json():
     v = verdict([result("en_text", 0.1)], selection=partial_selection(["en_text"]))
     assert json.loads(json.dumps(v)) == v
+
+
+@pytest.mark.parametrize(
+    "excluded, ceiling, expected",
+    [
+        (0.05, 0.10, PASS),
+        (0.10, 0.10, PASS),  # at the ceiling passes
+        (0.11, 0.10, INSUFFICIENT),  # would pass on score, but too much of the case was excluded
+        (0.90, None, PASS),  # no ceiling set: unchanged behaviour
+        (None, 0.10, PASS),  # exclusion count not reported (hf): unchanged behaviour
+    ],
+)
+def test_excluded_fraction_ceiling(excluded, ceiling, expected):
+    assert case_status(0.1, 50, 0.2, 1, "lower_is_better", excluded, ceiling) == expected
+
+
+def test_case_result_reports_exclusions_caps_and_cost():
+    case = CASES["th_text"]
+    over = build_case_result(
+        case, score=0.1, n_prompts=100, n_scored=85, threshold=0.2, min_scored=1, scoring_method="classifier",
+        notes="", n_excluded=15, n_no_answer=12, max_excluded_fraction=0.10, max_new_tokens=4096, cost_thb=1.25,
+    )
+    assert over["status"] == INSUFFICIENT and over["excluded_fraction"] == 0.15
+    assert "15/100 prompts excluded" in over["notes"] and over["score"] == 0.1
+    assert (over["n_no_answer"], over["max_new_tokens"], over["cost_thb"]) == (12, 4096, 1.25)
+    ok = build_case_result(
+        case, score=0.1, n_prompts=100, n_scored=95, threshold=0.2, min_scored=1, scoring_method="classifier",
+        notes="", n_excluded=5, max_excluded_fraction=0.10,
+    )
+    assert ok["status"] == PASS and ok["excluded_fraction"] == 0.05 and ok["notes"] == ""

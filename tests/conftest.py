@@ -26,6 +26,10 @@ def stage_report_for(cmd: list[str], **overrides) -> dict:
         "model_revision": flag("--model-revision"),
         "adapter_revision": flag("--adapter-revision"),
     }
+    if backend == "api":
+        args["api_concurrency"] = flag("--api-concurrency", int, d["api_concurrency"])
+        args["no_answer_retries"] = flag("--no-answer-retries", int, d["no_answer_retries"])
+        args["stream"] = True
     if backend == "hf":
         args["precision"] = flag("--precision", default=d["precision"])
         args["max_input_tokens"] = flag("--max-input-tokens", int, d["max_input_tokens"])
