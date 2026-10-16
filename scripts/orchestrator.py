@@ -150,14 +150,16 @@ def run_case(
     run_stage: RunStage = run_subprocess,
     timestamp: str | None = None,
     generation: dict | None = None,
+    prompts: Path | None = None,
 ) -> dict:
     runner = CASE_RUNNERS[case.case_id]
+    prompts = prompts or runner.prompts
     entry = thresholds["cases"][case.case_id]
     stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
     responses = responses_path(run_dir, case)
     scored = run_dir / f"scored_{case.case_id}.jsonl"
     sidecar = Path(str(responses) + ".stopped.json")
-    n_prompts = count_lines(runner.prompts)
+    n_prompts = count_lines(prompts)
 
     n_truncated_inputs = None
     generation_report = {
@@ -182,7 +184,7 @@ def run_case(
             **generation_report,
         )
 
-    gen_cmd = [sys.executable, "model_wrapper.py", "--prompts", str(runner.prompts), "--out", str(responses), *wrapper_args]
+    gen_cmd = [sys.executable, "model_wrapper.py", "--prompts", str(prompts), "--out", str(responses), *wrapper_args]
     code = run_stage(gen_cmd, LOGS / f"model_wrapper_{case.case_id}_{stamp}.log")
     budget_sidecar = Path(str(responses) + ".budget.json")
     if code == BUDGET_EXIT_CODE and budget_sidecar.exists():

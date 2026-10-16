@@ -134,8 +134,15 @@ class FakeApi:
                 self.model, self.limit_thb, self.ledger_path = model, limit_thb, ledger_path
                 api.guards.append(self)
 
-        def make_api_generate(model_id, concurrency=3, base_url=None, no_answer_retries=0, spend=None, transport=None):
-            api.make_kwargs = {"concurrency": concurrency, "no_answer_retries": no_answer_retries, "spend": spend}
+        def make_api_generate(
+            model_id, concurrency=3, base_url=None, no_answer_retries=0, spend=None, transport=None, extra_params=None
+        ):
+            api.make_kwargs = {
+                "concurrency": concurrency,
+                "no_answer_retries": no_answer_retries,
+                "spend": spend,
+                "extra_params": extra_params,
+            }
 
             def generate(prompts, max_new_tokens, temperature, top_p, seed=None, chat_template=None):
                 api.calls.append(list(prompts))
@@ -330,3 +337,23 @@ def test_hf_backend_still_falls_back_to_per_prompt_on_an_unexpected_error(wrappe
     wrapper.run("--out", str(wrapper.out), "--batch-size", "4")
     assert calls == [4, 1, 1, 1, 1]
     assert all(r["response"] == "answer" for r in read_jsonl(wrapper.out))
+
+
+def test_top_k_is_sent_in_extra_body_and_reported(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--temperature", "1.0",
+                "--top-p", "0.95", "--top-k", "20")
+    report = run_config.read_stage_report(wrapper.out)
+    assert fake_api.make_kwargs["extra_params"] == {"extra_body": {"top_k": 20}}
+    assert (report["args"]["temperature"], report["args"]["top_p"], report["args"]["top_k"]) == (1.0, 0.95, 20)
+
+
+def test_no_top_k_sends_no_extra_params_and_reports_none(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
+    assert fake_api.make_kwargs["extra_params"] is None
+    assert run_config.read_stage_report(wrapper.out)["args"]["top_k"] is None
+
+
+@pytest.mark.parametrize("extra", [["--top-k", "20"], ["--backend", "api", "--max-thb", "5", "--top-k", "0"]])
+def test_top_k_is_api_only_and_positive(wrapper, fake_api, extra):
+    with pytest.raises(SystemExit):
+        wrapper.run(*extra)

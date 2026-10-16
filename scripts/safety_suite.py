@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import re
 import sys
 from datetime import datetime
@@ -107,6 +108,31 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"api backend: requests in flight at once, 1 to {run_config.API_CONCURRENCY_CEILING}",
     )
     run.add_argument("--max-thb", type=float, default=None, help="api backend: spend limit in THB for the whole run (required)")
+    run.add_argument(
+        "--temperature",
+        type=float,
+        default=run_config.PROTOCOL["temperature"],
+        help="api backend: sampling temperature (default: the protocol's 0). Any other value makes the run non-admitting",
+    )
+    run.add_argument(
+        "--top-p",
+        type=float,
+        default=run_config.PROTOCOL["top_p"],
+        help="api backend: top_p (default: the protocol's 1)",
+    )
+    run.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="api backend: top_k, sent in the request's extra_body (default: not sent)",
+    )
+    run.add_argument(
+        "--sample-per-case",
+        type=int,
+        default=None,
+        help="Run a seeded random sample of this many prompts per case instead of the full set; never an admission",
+    )
+    run.add_argument("--sample-seed", type=int, default=None, help="Seed for --sample-per-case (required with it)")
     run.add_argument("--generation-config", default=None, help="Per-case/per-model cap table (default: config/generation.json)")
     run.add_argument(
         "--calibration-file", default=None, help="calibration.json from tools/calibrate_caps.py, for --dry-run's expected spend"
@@ -160,6 +186,30 @@ def parse_args(argv: list[str] | None = None):
             parser.error("--max-thb must be positive")
     elif args.max_thb is not None:
         parser.error("--max-thb applies only to the api backend")
+    sampling_flags = [
+        flag
+        for flag, given in (
+            ("--temperature", args.temperature != run_config.PROTOCOL["temperature"]),
+            ("--top-p", args.top_p != run_config.PROTOCOL["top_p"]),
+            ("--top-k", args.top_k is not None),
+        )
+        if given
+    ]
+    if sampling_flags and args.backend != "api":
+        parser.error(f"{', '.join(sampling_flags)} apply only to the api backend")
+    if args.temperature < 0:
+        parser.error("--temperature must be >= 0")
+    if not 0 < args.top_p <= 1:
+        parser.error("--top-p must be in (0, 1]")
+    if args.top_k is not None and args.top_k < 1:
+        parser.error("--top-k must be >= 1")
+    if args.sample_per_case is not None:
+        if args.sample_per_case < 1:
+            parser.error("--sample-per-case must be >= 1")
+        if args.sample_seed is None:
+            parser.error("--sample-per-case needs --sample-seed")
+    elif args.sample_seed is not None:
+        parser.error("--sample-seed needs --sample-per-case")
     return args
 
 
@@ -193,8 +243,8 @@ def wrapper_args(
         "--backend", args.backend,
         "--batch-size", str(args.batch_size),
         "--max-consecutive-failures", str(args.max_consecutive_failures),
-        "--temperature", str(run_config.PROTOCOL["temperature"]),
-        "--top-p", str(run_config.PROTOCOL["top_p"]),
+        "--temperature", str(args.temperature),
+        "--top-p", str(args.top_p),
         "--max-new-tokens", str(caps["max_new_tokens"]),
     ]
     if args.adapter:
@@ -204,6 +254,8 @@ def wrapper_args(
             "--api-concurrency", str(args.api_concurrency),
             "--no-answer-retries", str(d["no_answer_retries"]),
         ]
+        if args.top_k is not None:
+            forwarded += ["--top-k", str(args.top_k)]
         if args.max_thb is not None:
             forwarded += ["--max-thb", str(args.max_thb)]
         if spend_ledger is not None:
@@ -230,12 +282,14 @@ def forwarded_values(args, revisions: dict | None = None, generation: dict | Non
         "adapter": resolve_local(args.adapter),
         "batch_size": args.batch_size,
         "max_consecutive_failures": args.max_consecutive_failures,
-        "temperature": run_config.PROTOCOL["temperature"],
-        "top_p": run_config.PROTOCOL["top_p"],
+        "temperature": args.temperature,
+        "top_p": args.top_p,
         "max_new_tokens": caps["max_new_tokens"],
     }
     if args.backend == "api":
         values.update(api_concurrency=args.api_concurrency, no_answer_retries=d["no_answer_retries"])
+        if args.top_k is not None:
+            values["top_k"] = args.top_k
     if args.backend == "hf":
         values.update(
             precision=args.precision,
@@ -279,6 +333,7 @@ def build_run_args(
     generation: dict | None = None,
     generation_source: str | None = None,
     spent_thb: float | None = None,
+    sample: dict | None = None,
 ) -> dict:
     provenance = baseline["provenance"]
     return {
@@ -310,6 +365,8 @@ def build_run_args(
             else None
         ),
         "protocol": dict(run_config.PROTOCOL),
+        "sampling": run_config.effective_sampling(args.temperature, args.top_p, args.top_k),
+        "prompt_sample": sample,
         "per_model": baseline["per_model"],
         "model_input": baseline["model_input"],
         "provenance": {
@@ -329,6 +386,8 @@ def format_run_summary(
     args, inputs: Inputs, selection, thresholds: dict, revisions: dict | None = None, generation: dict | None = None
 ) -> str:
     counts = {case.case_id: count_lines(CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
+    if getattr(args, "sample_per_case", None) is not None:
+        counts = {cid: min(n, args.sample_per_case) for cid, n in counts.items()}
     lines = [
         "About to run:",
         f"  model        {args.model}  ({args.backend})",
@@ -359,7 +418,14 @@ def settings_line(args, revisions: dict, generation: dict | None = None) -> str:
         )
     else:
         cap_text = f"max_new_tokens {d['max_new_tokens']}"
-    parts = [f"batch {args.batch_size}", cap_text, "temperature 0, top_p 1 requested"]
+    sampling = run_config.effective_sampling(args.temperature, args.top_p, args.top_k)
+    top_k = f", top_k {sampling['top_k']} (extra_body)" if sampling["top_k"] is not None else ""
+    label = "" if sampling["matches_protocol"] else " [NOT the protocol: the run cannot be an admission]"
+    parts = [
+        f"batch {args.batch_size}",
+        cap_text,
+        f"temperature {sampling['temperature']:g}, top_p {sampling['top_p']:g}{top_k} requested{label}",
+    ]
     if args.backend == "hf":
         parts.insert(0, f"precision {args.precision}")
         input_caps = {case_caps(g)["max_input_tokens"] for g in (generation or {}).values()} or {d["max_input_tokens"]}
@@ -400,6 +466,39 @@ def not_attempted_summary(selection) -> list[str]:
         label = e["case_id"] or f"whole {e['gate']} gate"
         by_reason.setdefault(e["reason"], []).append(label)
     return [f"{', '.join(labels)} ({reason})" for reason, labels in by_reason.items()]
+
+
+def sample_records(path: Path, n: int, seed: int, case_id: str) -> list[dict]:
+    """A seeded random sample of a prompt set, in the set's own order; the whole set when it is smaller than n.
+
+    The same (seed, case) always picks the same records, so runs at different settings are paired.
+    """
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if n >= len(records):
+        return records
+    picked = sorted(random.Random(f"{seed}:{case_id}").sample(range(len(records)), n))
+    return [records[i] for i in picked]
+
+
+def write_samples(selection, run_dir: Path, n: int, seed: int) -> tuple[dict, dict]:
+    """Writes each case's sample into the run folder; returns (case id -> path, the record for run_args)."""
+    paths, ids = {}, {}
+    for case in selection.cases:
+        records = sample_records(CASE_RUNNERS[case.case_id].prompts, n, seed, case.case_id)
+        path = run_dir / f"prompts_{case.case_id}.jsonl"
+        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8")
+        paths[case.case_id] = path
+        ids[case.case_id] = [r.get("id") for r in records]
+    return paths, {"per_case": n, "seed": seed, "ids": ids}
+
+
+def protocol_deviations(args) -> list[str]:
+    found = []
+    if not run_config.effective_sampling(args.temperature, args.top_p, args.top_k)["matches_protocol"]:
+        found.append("sampling")
+    if args.sample_per_case is not None:
+        found.append("prompt_sample")
+    return found
 
 
 def partial_suffix(selection) -> str:
@@ -452,6 +551,10 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         run_dir = RESULTS / f"{safe_id}_{stamp}{partial_suffix(selection)}"
         run_dir.mkdir(parents=True, exist_ok=False)
     ledger = run_dir / SPEND_LEDGER_NAME if args.backend == "api" else None
+    sample_paths: dict = {}
+    sample_record = None
+    if args.sample_per_case is not None:
+        sample_paths, sample_record = write_samples(selection, run_dir, args.sample_per_case, args.sample_seed)
 
     try:
         case_results = [
@@ -463,6 +566,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
                 run_stage=run_stage,
                 timestamp=stamp,
                 generation=generation[case.case_id],
+                prompts=sample_paths.get(case.case_id),
             )
             for case in selection.cases
         ]
@@ -474,12 +578,15 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
             pass
         raise
     baseline, flags = collect_run_config(selection, run_dir, args, revisions, generation)
-    prompt_sets = run_config.prompt_set_hashes({case.case_id: CASE_RUNNERS[case.case_id].prompts for case in selection.cases})
+    prompt_sets = run_config.prompt_set_hashes(
+        {case.case_id: sample_paths.get(case.case_id, CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
+    )
     verdict = build_verdict(
         inputs.model_id,
         selection,
         case_results,
         thresholds_provisional=bool(thresholds.get("provisional", True)),
+        deviations=protocol_deviations(args),
         run_args=build_run_args(
             args,
             inputs,
@@ -490,6 +597,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
             generation=generation,
             generation_source=str(generation_path) if table is not None else None,
             spent_thb=read_spent(ledger),
+            sample=sample_record,
         ),
     )
 
@@ -501,6 +609,8 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         + (" (provisional thresholds)" if verdict["thresholds_provisional"] else "")
     )
     scope = "; scope=partial" if verdict["run_scope"] == "partial" else ""
+    if verdict["protocol_deviations"]:
+        scope += "; non-protocol: " + "+".join(verdict["protocol_deviations"])
     append_index_row(stamp, inputs.model_id, f"cases: {cases}{scope}", outcome, f"{run_dir.relative_to(REPO_ROOT)}/, {out}")
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
@@ -543,7 +653,11 @@ def format_dry_run(args, selection, generation: dict, calibration_file: str | No
     for case in selection.cases:
         runner = CASE_RUNNERS[case.case_id]
         cap = generation[case.case_id]["max_new_tokens"]
-        prompts = [json.loads(line).get("model_input", "") for line in runner.prompts.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if args.sample_per_case is not None:
+            chosen = sample_records(runner.prompts, args.sample_per_case, args.sample_seed, case.case_id)
+            prompts = [r.get("model_input", "") for r in chosen]
+        else:
+            prompts = [json.loads(line).get("model_input", "") for line in runner.prompts.read_text(encoding="utf-8").splitlines() if line.strip()]
         worst = sum(api_model.worst_case_thb(args.model, api_model.estimate_input_tokens(p), cap) for p in prompts)
         expected = None
         sample = (calibration or {}).get("cases", {}).get(case.case_id)
@@ -555,8 +669,13 @@ def format_dry_run(args, selection, generation: dict, calibration_file: str | No
             expected_known = False
         total_worst += worst
         rows.append((case.case_id, len(prompts), cap, worst, expected))
+    sample_note = (
+        f"; seeded sample of {args.sample_per_case} per case, seed {args.sample_seed}"
+        if args.sample_per_case is not None
+        else ""
+    )
     lines = [
-        f"  spend bounds ({args.model}; THB {price_in:g} in / {price_out:g} out per 1M tokens)",
+        f"  spend bounds ({args.model}; THB {price_in:g} in / {price_out:g} out per 1M tokens{sample_note})",
         "    case            prompts   cap   worst case    expected",
     ]
     for case_id, n, cap, worst, expected in rows:

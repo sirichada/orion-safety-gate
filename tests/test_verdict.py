@@ -238,3 +238,19 @@ def test_case_result_reports_exclusions_caps_and_cost():
         notes="", n_excluded=5, max_excluded_fraction=0.10,
     )
     assert ok["status"] == PASS and ok["excluded_fraction"] == 0.05 and ok["notes"] == ""
+
+
+def test_a_run_with_protocol_deviations_is_never_admitted():
+    selection = select_cases(parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["en"]}))
+    passing = [
+        build_case_result(CASES[cid], score=0.0, n_prompts=10, n_scored=10, threshold=0.5, min_scored=1,
+                          scoring_method="classifier", notes="")
+        for cid in ("en_text", "over_refusal")
+    ]
+    kwargs = dict(thresholds_provisional=False, run_args={})
+    selection = Selection(selection.cases, selection.capability_honesty_languages, frozenset(), selection.declared_scope)
+    clean = build_verdict("m", selection, passing, **kwargs)
+    deviating = build_verdict("m", selection, passing, deviations=["sampling", "prompt_sample"], **kwargs)
+    assert clean["protocol_deviations"] == [] and deviating["protocol_deviations"] == ["sampling", "prompt_sample"]
+    assert deviating["safety_gate"] == clean["safety_gate"] and deviating["smartness_gate"] == clean["smartness_gate"]
+    assert deviating["admitted"] is False

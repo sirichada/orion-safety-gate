@@ -140,7 +140,12 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
     if api:
         import api_model
 
-        args_used.update(api_concurrency=args.api_concurrency, no_answer_retries=args.no_answer_retries, stream=True)
+        args_used.update(
+            api_concurrency=args.api_concurrency,
+            no_answer_retries=args.no_answer_retries,
+            top_k=args.top_k,
+            stream=True,
+        )
         server_side = run_config.unavailable("server-side chat template")
         return run_config.build_stage_report(
             args=args_used,
@@ -217,6 +222,12 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="api backend: top_k, sent inside the request's extra_body object (the gateway rejects it as a top-level field)",
+    )
+    parser.add_argument(
         "--precision",
         choices=run_config.PRECISIONS,
         default=run_config.DEFAULTS["precision"],
@@ -285,6 +296,11 @@ def main():
             parser.error("--max-thb is required for --backend api and must be positive")
     elif args.max_thb is not None or args.spend_ledger is not None:
         parser.error("--max-thb/--spend-ledger apply only to the api backend")
+    if args.top_k is not None:
+        if args.backend != "api":
+            parser.error("--top-k applies only to the api backend")
+        if args.top_k < 1:
+            parser.error("--top-k must be >= 1")
 
     if args.backend == "api":
         if (
@@ -307,11 +323,13 @@ def main():
             spend = SpendGuard(args.model, args.max_thb, args.spend_ledger)
         except ValueError as e:
             parser.error(str(e))
+        sampling_extras = {"extra_params": {"extra_body": {"top_k": args.top_k}}} if args.top_k is not None else {}
         generate = make_api_generate(
             args.model,
             concurrency=args.api_concurrency,
             no_answer_retries=args.no_answer_retries,
             spend=spend,
+            **sampling_extras,
         )
     else:
         try:

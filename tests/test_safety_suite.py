@@ -626,3 +626,120 @@ def test_summary_shows_the_effective_settings(sandbox, capsys):
     assert "precision as_published" in out and "batch 8" in out and "max_new_tokens 256" in out
     assert "temperature 0, top_p 1 requested" in out
     assert "model@" + "a" * 12 in out
+
+
+# ------------------------------------------------------------- sampling and prompt samples
+
+
+def test_sampling_flags_are_forwarded_and_expected_back():
+    args = parse(*BASE, "--backend", "api", "--max-thb", "3", "--temperature", "1.0", "--top-p", "0.95", "--top-k", "20")
+    forwarded = safety_suite.wrapper_args(args, None, {"max_new_tokens": 4096})
+    assert forwarded[forwarded.index("--temperature") + 1] == "1.0"
+    assert forwarded[forwarded.index("--top-p") + 1] == "0.95"
+    assert forwarded[forwarded.index("--top-k") + 1] == "20"
+    values = safety_suite.forwarded_values(args, None, {"max_new_tokens": 4096})
+    assert (values["temperature"], values["top_p"], values["top_k"]) == (1.0, 0.95, 20)
+
+
+def test_default_sampling_forwards_no_top_k():
+    args = parse(*BASE, "--backend", "api", "--max-thb", "3")
+    assert "--top-k" not in safety_suite.wrapper_args(args, None, {"max_new_tokens": 4096})
+    assert "top_k" not in safety_suite.forwarded_values(args, None, {"max_new_tokens": 4096})
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--temperature", "1.0"],  # hf backend
+        ["--top-k", "20"],  # hf backend
+        ["--backend", "api", "--max-thb", "3", "--top-k", "0"],
+        ["--backend", "api", "--max-thb", "3", "--top-p", "0"],
+        ["--backend", "api", "--max-thb", "3", "--temperature", "-0.1"],
+        ["--sample-per-case", "5"],  # no seed
+        ["--sample-seed", "1"],  # no sample size
+        ["--sample-per-case", "0", "--sample-seed", "1"],
+    ],
+)
+def test_sampling_and_sample_flags_are_validated(extra):
+    with pytest.raises(SystemExit):
+        parse(*BASE, *extra)
+
+
+def test_sample_records_are_seeded_paired_and_in_file_order(tmp_path):
+    path = tmp_path / "set.jsonl"
+    path.write_text("".join(json.dumps({"id": f"r{i}"}) + "\n" for i in range(100)), encoding="utf-8")
+    first = safety_suite.sample_records(path, 10, 7, "th_text")
+    assert first == safety_suite.sample_records(path, 10, 7, "th_text")
+    assert len(first) == 10 and len({r["id"] for r in first}) == 10
+    positions = [int(r["id"][1:]) for r in first]
+    assert positions == sorted(positions)
+    assert first != safety_suite.sample_records(path, 10, 8, "th_text")
+    assert first != safety_suite.sample_records(path, 10, 7, "en_text")
+    assert len(safety_suite.sample_records(path, 500, 7, "th_text")) == 100
+
+
+def test_sampled_vendor_run_records_sampling_and_sample_and_is_not_an_admission(sandbox):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    prompts = sandbox / "th_text.jsonl"
+    prompts.write_text("".join(json.dumps({"id": f"thaisafetybench_{i}", "model_input": f"q{i}"}) + "\n" for i in range(30)),
+                       encoding="utf-8")
+    seen = {}
+
+    def stages(cmd, log_path):
+        if cmd[1] == "model_wrapper.py":
+            seen["prompts"] = Path(cmd[cmd.index("--prompts") + 1])
+            seen["top_k"] = cmd[cmd.index("--top-k") + 1]
+            n = len(seen["prompts"].read_text(encoding="utf-8").splitlines())
+            out = Path(cmd[cmd.index("--out") + 1])
+            out.write_text("{}\n", encoding="utf-8")
+            run_config.write_stage_report(out, stage_report_for(cmd))
+            seen["n"] = n
+            return 0
+        out = Path(cmd[cmd.index("--out") + 1])
+        record = {"label": 0, "excluded": False, "exclusion_reason": None, "scoring_method": "classifier", "truncated": False}
+        out.write_text((json.dumps(record) + "\n") * seen["n"], encoding="utf-8")
+        return 0
+
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--temperature", "1.0",
+                   "--top-p", "0.95", "--top-k", "20", "--sample-per-case", "5", "--sample-seed", "11")
+    verdict = safety_suite.main(argv, run_stage=stages, interactive=False)
+    run_dir = next((sandbox / "results").iterdir())
+    assert seen["prompts"] == run_dir / "prompts_th_text.jsonl" and seen["n"] == 5 and seen["top_k"] == "20"
+    ra = verdict["run_args"]
+    assert ra["sampling"] == {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "top_k_location": "extra_body",
+                              "matches_protocol": False}
+    assert ra["protocol"]["temperature"] == 0.0  # the declared protocol is still recorded beside it
+    assert ra["prompt_sample"]["per_case"] == 5 and ra["prompt_sample"]["seed"] == 11
+    assert len(ra["prompt_sample"]["ids"]["th_text"]) == 5
+    assert ra["provenance"]["prompt_sets"]["th_text"] == run_config.file_sha256(seen["prompts"])
+    assert verdict["protocol_deviations"] == ["sampling", "prompt_sample"] and verdict["admitted"] is False
+    assert verdict["case_results"][0]["n_prompts"] == 5
+    index = (sandbox / "_index.md").read_text(encoding="utf-8")
+    assert "non-protocol: sampling+prompt_sample" in index
+
+
+def test_protocol_run_lists_no_deviations(sandbox):
+    verdict = safety_suite.main(th_argv(sandbox), run_stage=fake_stages, interactive=False)
+    assert verdict["protocol_deviations"] == []
+    assert verdict["run_args"]["sampling"]["matches_protocol"] is True and verdict["run_args"]["prompt_sample"] is None
+
+
+def test_summary_marks_non_protocol_sampling(sandbox, capsys):
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--temperature", "1.0", "--top-p", "0.95", "--top-k", "20", "--dry-run",
+                   "--generation-config", write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}}))
+    safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    out = capsys.readouterr().out
+    assert "temperature 1, top_p 0.95, top_k 20 (extra_body) requested [NOT the protocol" in out
+
+
+def test_dry_run_bounds_follow_the_sample_size(sandbox, capsys):
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--dry-run",
+                   "--sample-per-case", "2", "--sample-seed", "3")
+    safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    out = capsys.readouterr().out
+    assert "seeded sample of 2 per case, seed 3" in out
+    assert "th_text (2 prompts)" in out and "total        2 prompts" in out
+    line = next(l for l in out.splitlines() if l.strip().startswith("th_text"))
+    assert line.split()[1] == "2"
+    assert not (sandbox / "results").exists()

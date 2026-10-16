@@ -271,3 +271,12 @@ def test_generation_hash_depends_only_on_the_resolved_caps():
     one = {"en_text": {"max_new_tokens": 4096, "max_input_tokens": None}}
     assert run_config.generation_sha256(one) == run_config.generation_sha256(dict(one))
     assert run_config.generation_sha256(one) != run_config.generation_sha256({"en_text": {"max_new_tokens": 2048, "max_input_tokens": None}})
+
+
+def test_effective_sampling_flags_anything_but_the_protocol():
+    assert run_config.effective_sampling(0.0, 1.0, None) == {
+        "temperature": 0.0, "top_p": 1.0, "top_k": None, "top_k_location": None, "matches_protocol": True,
+    }
+    vendor = run_config.effective_sampling(1.0, 0.95, 20)
+    assert vendor["matches_protocol"] is False and vendor["top_k_location"] == "extra_body"
+    assert run_config.effective_sampling(0.0, 1.0, 20)["matches_protocol"] is False

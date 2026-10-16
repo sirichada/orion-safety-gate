@@ -48,6 +48,20 @@ PER_CASE_FIELDS = ("max_new_tokens", "max_input_tokens")
 
 PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system_prompt": "none"}
 
+# Where the gateway accepts top_k: a top-level field is rejected with HTTP 500.
+TOP_K_LOCATION = "extra_body"
+
+
+def effective_sampling(temperature: float, top_p: float, top_k: int | None) -> dict:
+    """The sampling a run requested, and whether it is the protocol's (temperature 0, top_p 1, no top_k)."""
+    return {
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "top_k_location": TOP_K_LOCATION if top_k is not None else None,
+        "matches_protocol": (temperature, top_p, top_k) == (PROTOCOL["temperature"], PROTOCOL["top_p"], None),
+    }
+
 TEMPLATE_PLACEHOLDER = "<<ORION_RUN_CONFIG_PLACEHOLDER>>"
 TEMPLATE_PARAMETERS = ("enable_thinking", "reasoning_effort")
 
