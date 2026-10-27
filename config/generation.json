@@ -1,5 +1,5 @@
 {
-  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. Mango 1.5-9B's caps were calibrated on 2026-10-27; the other models' 8192 values are provisional until their calibration. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
+  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. All three models' caps were calibrated on 2026-10-27: each is the smallest step at least twice the longest finished reply, with cut-off prompts re-sent at 32768. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
   "cases": {
     "en_text": {
       "max_new_tokens": 256,
@@ -28,24 +28,24 @@
     },
     "Qwen 3.8-27B": {
       "en_text": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 32768
       },
       "th_text": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 32768
       },
       "over_refusal": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 16384
       }
     },
     "Qwen 3.8-Flash-Next": {
       "en_text": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 16384
       },
       "th_text": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 65536
       },
       "over_refusal": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 32768
       }
     }
   },
