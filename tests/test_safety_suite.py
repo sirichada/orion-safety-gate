@@ -647,11 +647,28 @@ def test_default_sampling_forwards_no_top_k():
     assert "top_k" not in safety_suite.forwarded_values(args, None, {"max_new_tokens": 4096})
 
 
+def test_presence_penalty_is_forwarded_and_expected_back():
+    args = parse(*BASE, "--backend", "api", "--max-thb", "3", "--presence-penalty", "1.5")
+    forwarded = safety_suite.wrapper_args(args, None, {"max_new_tokens": 4096})
+    assert forwarded[forwarded.index("--presence-penalty") + 1] == "1.5"
+    assert safety_suite.forwarded_values(args, None, {"max_new_tokens": 4096})["presence_penalty"] == 1.5
+    assert safety_suite.protocol_deviations(args) == ["sampling"]
+
+
+def test_default_sampling_forwards_no_presence_penalty():
+    args = parse(*BASE, "--backend", "api", "--max-thb", "3")
+    assert "--presence-penalty" not in safety_suite.wrapper_args(args, None, {"max_new_tokens": 4096})
+    assert "presence_penalty" not in safety_suite.forwarded_values(args, None, {"max_new_tokens": 4096})
+
+
 @pytest.mark.parametrize(
     "extra",
     [
         ["--temperature", "1.0"],  # hf backend
         ["--top-k", "20"],  # hf backend
+        ["--presence-penalty", "1.5"],  # hf backend
+        ["--backend", "api", "--max-thb", "3", "--presence-penalty", "2.5"],
+        ["--backend", "api", "--max-thb", "3", "--presence-penalty", "-2.1"],
         ["--backend", "api", "--max-thb", "3", "--top-k", "0"],
         ["--backend", "api", "--max-thb", "3", "--top-p", "0"],
         ["--backend", "api", "--max-thb", "3", "--temperature", "-0.1"],
@@ -707,7 +724,7 @@ def test_sampled_vendor_run_records_sampling_and_sample_and_is_not_an_admission(
     assert seen["prompts"] == run_dir / "prompts_th_text.jsonl" and seen["n"] == 5 and seen["top_k"] == "20"
     ra = verdict["run_args"]
     assert ra["sampling"] == {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "top_k_location": "extra_body",
-                              "matches_protocol": False}
+                              "presence_penalty": None, "presence_penalty_location": None, "matches_protocol": False}
     assert ra["protocol"]["temperature"] == 0.0  # the declared protocol is still recorded beside it
     assert ra["prompt_sample"]["per_case"] == 5 and ra["prompt_sample"]["seed"] == 11
     assert len(ra["prompt_sample"]["ids"]["th_text"]) == 5
@@ -730,6 +747,15 @@ def test_summary_marks_non_protocol_sampling(sandbox, capsys):
     safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
     out = capsys.readouterr().out
     assert "temperature 1, top_p 0.95, top_k 20 (extra_body) requested [NOT the protocol" in out
+
+
+def test_summary_shows_presence_penalty(sandbox, capsys):
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--temperature", "1.0", "--top-p", "0.95", "--top-k", "20",
+                   "--presence-penalty", "1.5", "--dry-run",
+                   "--generation-config", write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}}))
+    safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    out = capsys.readouterr().out
+    assert "top_k 20 (extra_body), presence_penalty 1.5 requested [NOT the protocol" in out
 
 
 def test_dry_run_bounds_follow_the_sample_size(sandbox, capsys):

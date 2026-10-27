@@ -127,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="api backend: top_k, sent in the request's extra_body (default: not sent)",
     )
     run.add_argument(
+        "--presence-penalty",
+        type=float,
+        default=None,
+        help="api backend: presence_penalty in [-2, 2], sent as a top-level request field (default: not sent)",
+    )
+    run.add_argument(
         "--sample-per-case",
         type=int,
         default=None,
@@ -192,6 +198,7 @@ def parse_args(argv: list[str] | None = None):
             ("--temperature", args.temperature != run_config.PROTOCOL["temperature"]),
             ("--top-p", args.top_p != run_config.PROTOCOL["top_p"]),
             ("--top-k", args.top_k is not None),
+            ("--presence-penalty", args.presence_penalty is not None),
         )
         if given
     ]
@@ -203,6 +210,8 @@ def parse_args(argv: list[str] | None = None):
         parser.error("--top-p must be in (0, 1]")
     if args.top_k is not None and args.top_k < 1:
         parser.error("--top-k must be >= 1")
+    if args.presence_penalty is not None and not -2 <= args.presence_penalty <= 2:
+        parser.error("--presence-penalty must be in [-2, 2]")
     if args.sample_per_case is not None:
         if args.sample_per_case < 1:
             parser.error("--sample-per-case must be >= 1")
@@ -256,6 +265,8 @@ def wrapper_args(
         ]
         if args.top_k is not None:
             forwarded += ["--top-k", str(args.top_k)]
+        if args.presence_penalty is not None:
+            forwarded += ["--presence-penalty", str(args.presence_penalty)]
         if args.max_thb is not None:
             forwarded += ["--max-thb", str(args.max_thb)]
         if spend_ledger is not None:
@@ -290,6 +301,8 @@ def forwarded_values(args, revisions: dict | None = None, generation: dict | Non
         values.update(api_concurrency=args.api_concurrency, no_answer_retries=d["no_answer_retries"])
         if args.top_k is not None:
             values["top_k"] = args.top_k
+        if args.presence_penalty is not None:
+            values["presence_penalty"] = args.presence_penalty
     if args.backend == "hf":
         values.update(
             precision=args.precision,
@@ -365,7 +378,7 @@ def build_run_args(
             else None
         ),
         "protocol": dict(run_config.PROTOCOL),
-        "sampling": run_config.effective_sampling(args.temperature, args.top_p, args.top_k),
+        "sampling": run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty),
         "prompt_sample": sample,
         "per_model": baseline["per_model"],
         "model_input": baseline["model_input"],
@@ -418,8 +431,10 @@ def settings_line(args, revisions: dict, generation: dict | None = None) -> str:
         )
     else:
         cap_text = f"max_new_tokens {d['max_new_tokens']}"
-    sampling = run_config.effective_sampling(args.temperature, args.top_p, args.top_k)
+    sampling = run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty)
     top_k = f", top_k {sampling['top_k']} (extra_body)" if sampling["top_k"] is not None else ""
+    if sampling["presence_penalty"] is not None:
+        top_k += f", presence_penalty {sampling['presence_penalty']:g}"
     label = "" if sampling["matches_protocol"] else " [NOT the protocol: the run cannot be an admission]"
     parts = [
         f"batch {args.batch_size}",
@@ -494,7 +509,7 @@ def write_samples(selection, run_dir: Path, n: int, seed: int) -> tuple[dict, di
 
 def protocol_deviations(args) -> list[str]:
     found = []
-    if not run_config.effective_sampling(args.temperature, args.top_p, args.top_k)["matches_protocol"]:
+    if not run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty)["matches_protocol"]:
         found.append("sampling")
     if args.sample_per_case is not None:
         found.append("prompt_sample")

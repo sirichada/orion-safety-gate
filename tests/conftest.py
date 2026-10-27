@@ -30,6 +30,7 @@ def stage_report_for(cmd: list[str], **overrides) -> dict:
         args["api_concurrency"] = flag("--api-concurrency", int, d["api_concurrency"])
         args["no_answer_retries"] = flag("--no-answer-retries", int, d["no_answer_retries"])
         args["top_k"] = flag("--top-k", int, None)
+        args["presence_penalty"] = flag("--presence-penalty", float, None)
         args["stream"] = True
     if backend == "hf":
         args["precision"] = flag("--precision", default=d["precision"])

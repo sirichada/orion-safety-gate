@@ -275,8 +275,13 @@ def test_generation_hash_depends_only_on_the_resolved_caps():
 
 def test_effective_sampling_flags_anything_but_the_protocol():
     assert run_config.effective_sampling(0.0, 1.0, None) == {
-        "temperature": 0.0, "top_p": 1.0, "top_k": None, "top_k_location": None, "matches_protocol": True,
+        "temperature": 0.0, "top_p": 1.0, "top_k": None, "top_k_location": None,
+        "presence_penalty": None, "presence_penalty_location": None, "matches_protocol": True,
     }
     vendor = run_config.effective_sampling(1.0, 0.95, 20)
     assert vendor["matches_protocol"] is False and vendor["top_k_location"] == "extra_body"
     assert run_config.effective_sampling(0.0, 1.0, 20)["matches_protocol"] is False
+    penalised = run_config.effective_sampling(0.0, 1.0, None, 1.5)
+    assert penalised["matches_protocol"] is False
+    assert (penalised["presence_penalty"], penalised["presence_penalty_location"]) == (1.5, "top_level")
+    assert run_config.effective_sampling(0.0, 1.0, None, 0.0)["matches_protocol"] is False

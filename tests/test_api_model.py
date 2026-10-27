@@ -392,6 +392,13 @@ def test_extra_params_are_sent_at_the_top_level_of_the_request():
     assert "top_k" not in plain.requests[0]
 
 
+def test_presence_penalty_and_top_k_extra_body_travel_together():
+    server = Server(default=stream_response(sse("ok")))
+    make(server, extra_params={"extra_body": {"top_k": 20}, "presence_penalty": 1.5})(["x"], 64, 1.0, 0.95)
+    sent = server.requests[0]
+    assert sent["presence_penalty"] == 1.5 and sent["extra_body"] == {"top_k": 20}
+
+
 def test_max_attempts_one_sends_each_request_once():
     server = Server(default=httpx.Response(500, text="boom"))
     generate = make(server, max_attempts=1)

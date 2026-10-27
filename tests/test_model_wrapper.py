@@ -353,6 +353,36 @@ def test_no_top_k_sends_no_extra_params_and_reports_none(wrapper, fake_api):
     assert run_config.read_stage_report(wrapper.out)["args"]["top_k"] is None
 
 
+def test_presence_penalty_is_top_level_beside_top_k_in_extra_body_and_reported(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--temperature", "1.0",
+                "--top-p", "0.95", "--top-k", "20", "--presence-penalty", "1.5")
+    assert fake_api.make_kwargs["extra_params"] == {"extra_body": {"top_k": 20}, "presence_penalty": 1.5}
+    assert run_config.read_stage_report(wrapper.out)["args"]["presence_penalty"] == 1.5
+
+
+def test_presence_penalty_alone_adds_only_the_top_level_field(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5", "--presence-penalty", "1.5")
+    assert fake_api.make_kwargs["extra_params"] == {"presence_penalty": 1.5}
+
+
+def test_no_presence_penalty_is_reported_as_none(wrapper, fake_api):
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
+    assert run_config.read_stage_report(wrapper.out)["args"]["presence_penalty"] is None
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--presence-penalty", "1.5"],  # hf backend
+        ["--backend", "api", "--max-thb", "5", "--presence-penalty", "2.5"],
+        ["--backend", "api", "--max-thb", "5", "--presence-penalty", "-2.5"],
+    ],
+)
+def test_presence_penalty_is_api_only_and_in_range(wrapper, fake_api, extra):
+    with pytest.raises(SystemExit):
+        wrapper.run(*extra)
+
+
 @pytest.mark.parametrize("extra", [["--top-k", "20"], ["--backend", "api", "--max-thb", "5", "--top-k", "0"]])
 def test_top_k_is_api_only_and_positive(wrapper, fake_api, extra):
     with pytest.raises(SystemExit):

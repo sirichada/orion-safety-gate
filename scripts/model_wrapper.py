@@ -144,6 +144,7 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
             api_concurrency=args.api_concurrency,
             no_answer_retries=args.no_answer_retries,
             top_k=args.top_k,
+            presence_penalty=args.presence_penalty,
             stream=True,
         )
         server_side = run_config.unavailable("server-side chat template")
@@ -228,6 +229,12 @@ def main():
         help="api backend: top_k, sent inside the request's extra_body object (the gateway rejects it as a top-level field)",
     )
     parser.add_argument(
+        "--presence-penalty",
+        type=float,
+        default=None,
+        help="api backend: presence_penalty in [-2, 2], sent as a top-level request field",
+    )
+    parser.add_argument(
         "--precision",
         choices=run_config.PRECISIONS,
         default=run_config.DEFAULTS["precision"],
@@ -301,6 +308,11 @@ def main():
             parser.error("--top-k applies only to the api backend")
         if args.top_k < 1:
             parser.error("--top-k must be >= 1")
+    if args.presence_penalty is not None:
+        if args.backend != "api":
+            parser.error("--presence-penalty applies only to the api backend")
+        if not -2 <= args.presence_penalty <= 2:
+            parser.error("--presence-penalty must be in [-2, 2]")
 
     if args.backend == "api":
         if (
@@ -323,7 +335,12 @@ def main():
             spend = SpendGuard(args.model, args.max_thb, args.spend_ledger)
         except ValueError as e:
             parser.error(str(e))
-        sampling_extras = {"extra_params": {"extra_body": {"top_k": args.top_k}}} if args.top_k is not None else {}
+        extra_params = {}
+        if args.top_k is not None:
+            extra_params["extra_body"] = {"top_k": args.top_k}
+        if args.presence_penalty is not None:
+            extra_params["presence_penalty"] = args.presence_penalty
+        sampling_extras = {"extra_params": extra_params} if extra_params else {}
         generate = make_api_generate(
             args.model,
             concurrency=args.api_concurrency,

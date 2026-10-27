@@ -51,15 +51,21 @@ PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system
 # Where the gateway accepts top_k: a top-level field is rejected with HTTP 500.
 TOP_K_LOCATION = "extra_body"
 
+# presence_penalty is accepted as a top-level field and range-checked to [-2, 2].
+PRESENCE_PENALTY_LOCATION = "top_level"
 
-def effective_sampling(temperature: float, top_p: float, top_k: int | None) -> dict:
-    """The sampling a run requested, and whether it is the protocol's (temperature 0, top_p 1, no top_k)."""
+
+def effective_sampling(temperature: float, top_p: float, top_k: int | None, presence_penalty: float | None = None) -> dict:
+    """The sampling a run requested, and whether it is the protocol's (temperature 0, top_p 1, no top_k, no presence_penalty)."""
     return {
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
         "top_k_location": TOP_K_LOCATION if top_k is not None else None,
-        "matches_protocol": (temperature, top_p, top_k) == (PROTOCOL["temperature"], PROTOCOL["top_p"], None),
+        "presence_penalty": presence_penalty,
+        "presence_penalty_location": PRESENCE_PENALTY_LOCATION if presence_penalty is not None else None,
+        "matches_protocol": (temperature, top_p, top_k, presence_penalty)
+        == (PROTOCOL["temperature"], PROTOCOL["top_p"], None, None),
     }
 
 TEMPLATE_PLACEHOLDER = "<<ORION_RUN_CONFIG_PLACEHOLDER>>"

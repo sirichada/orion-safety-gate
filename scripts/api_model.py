@@ -350,7 +350,7 @@ def make_api_generate(
             }
             if seed is not None:
                 payload["seed"] = seed
-            # Top-level request fields the suite never sends (a calibration may add top_k).
+            # Extra sampling fields: top-level ones such as presence_penalty, or an extra_body object holding top_k.
             payload.update(extra_params or {})
             worst = worst_case_thb(model_id, estimate_input_tokens(prompt), max_new_tokens) if spend is not None else 0.0
             spent = [0.0]
