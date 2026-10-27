@@ -1,5 +1,5 @@
 {
-  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. The api model caps are provisional starting values (8192) until the full calibration run. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
+  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. Mango 1.5-9B's caps were calibrated on 2026-10-27; the other models' 8192 values are provisional until their calibration. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
   "cases": {
     "en_text": {
       "max_new_tokens": 256,
@@ -17,7 +17,7 @@
   "models": {
     "Mango 1.5-9B": {
       "en_text": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 16384
       },
       "th_text": {
         "max_new_tokens": 8192
