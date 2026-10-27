@@ -55,8 +55,36 @@ TOP_K_LOCATION = "extra_body"
 PRESENCE_PENALTY_LOCATION = "top_level"
 
 
-def effective_sampling(temperature: float, top_p: float, top_k: int | None, presence_penalty: float | None = None) -> dict:
-    """The sampling a run requested, and whether it is the protocol's (temperature 0, top_p 1, no top_k, no presence_penalty)."""
+GREEDY_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": None, "presence_penalty": None}
+SAMPLING_FIELDS = tuple(GREEDY_SAMPLING)
+
+
+def resolve_protocol_sampling(config: dict | None, model_id: str, backend: str) -> dict:
+    """The sampling the protocol prescribes for one model.
+
+    The hf backend runs greedy. The api backend (thinking models) reads config["protocols"][model_id]
+    and refuses a model with no entry, the same as a missing cap.
+    """
+    if backend != "api":
+        return dict(GREEDY_SAMPLING)
+    entry = ((config or {}).get("protocols") or {}).get(model_id)
+    if not isinstance(entry, dict):
+        raise GenerationConfigError(
+            f"no sampling protocol for model {model_id!r} in the generation config; add protocols[model] before an api run"
+        )
+    numeric = all(isinstance(entry.get(k), (int, float)) and not isinstance(entry.get(k), bool) for k in ("temperature", "top_p"))
+    if set(entry) - set(SAMPLING_FIELDS) or not numeric:
+        raise GenerationConfigError(
+            f"protocols[{model_id!r}] needs numeric temperature and top_p, and may only add top_k and presence_penalty; got {entry!r}"
+        )
+    return {k: entry.get(k, GREEDY_SAMPLING[k]) for k in SAMPLING_FIELDS}
+
+
+def effective_sampling(
+    temperature: float, top_p: float, top_k: int | None, presence_penalty: float | None = None, protocol: dict | None = None
+) -> dict:
+    """The sampling a run requested, and whether it is the protocol's (greedy unless a per-model protocol is given)."""
+    protocol = protocol or GREEDY_SAMPLING
     return {
         "temperature": temperature,
         "top_p": top_p,
@@ -64,9 +92,9 @@ def effective_sampling(temperature: float, top_p: float, top_k: int | None, pres
         "top_k_location": TOP_K_LOCATION if top_k is not None else None,
         "presence_penalty": presence_penalty,
         "presence_penalty_location": PRESENCE_PENALTY_LOCATION if presence_penalty is not None else None,
-        "matches_protocol": (temperature, top_p, top_k, presence_penalty)
-        == (PROTOCOL["temperature"], PROTOCOL["top_p"], None, None),
+        "matches_protocol": (temperature, top_p, top_k, presence_penalty) == tuple(protocol[k] for k in SAMPLING_FIELDS),
     }
+
 
 TEMPLATE_PLACEHOLDER = "<<ORION_RUN_CONFIG_PLACEHOLDER>>"
 TEMPLATE_PARAMETERS = ("enable_thinking", "reasoning_effort")

@@ -111,26 +111,26 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--temperature",
         type=float,
-        default=run_config.PROTOCOL["temperature"],
-        help="api backend: sampling temperature (default: the protocol's 0). Any other value makes the run non-admitting",
+        default=None,
+        help="api backend: sampling temperature (default: the model's protocol in the generation config). A value off the protocol makes the run non-admitting",
     )
     run.add_argument(
         "--top-p",
         type=float,
-        default=run_config.PROTOCOL["top_p"],
-        help="api backend: top_p (default: the protocol's 1)",
+        default=None,
+        help="api backend: top_p (default: the model's protocol in the generation config)",
     )
     run.add_argument(
         "--top-k",
         type=int,
         default=None,
-        help="api backend: top_k, sent in the request's extra_body (default: not sent)",
+        help="api backend: top_k, sent in the request's extra_body (default: the model's protocol)",
     )
     run.add_argument(
         "--presence-penalty",
         type=float,
         default=None,
-        help="api backend: presence_penalty in [-2, 2], sent as a top-level request field (default: not sent)",
+        help="api backend: presence_penalty in [-2, 2], sent as a top-level request field (default: the model's protocol)",
     )
     run.add_argument(
         "--sample-per-case",
@@ -195,8 +195,8 @@ def parse_args(argv: list[str] | None = None):
     sampling_flags = [
         flag
         for flag, given in (
-            ("--temperature", args.temperature != run_config.PROTOCOL["temperature"]),
-            ("--top-p", args.top_p != run_config.PROTOCOL["top_p"]),
+            ("--temperature", args.temperature is not None),
+            ("--top-p", args.top_p is not None),
             ("--top-k", args.top_k is not None),
             ("--presence-penalty", args.presence_penalty is not None),
         )
@@ -204,9 +204,11 @@ def parse_args(argv: list[str] | None = None):
     ]
     if sampling_flags and args.backend != "api":
         parser.error(f"{', '.join(sampling_flags)} apply only to the api backend")
-    if args.temperature < 0:
+    if args.backend != "api":
+        args.temperature, args.top_p = run_config.GREEDY_SAMPLING["temperature"], run_config.GREEDY_SAMPLING["top_p"]
+    if args.temperature is not None and args.temperature < 0:
         parser.error("--temperature must be >= 0")
-    if not 0 < args.top_p <= 1:
+    if args.top_p is not None and not 0 < args.top_p <= 1:
         parser.error("--top-p must be in (0, 1]")
     if args.top_k is not None and args.top_k < 1:
         parser.error("--top-k must be >= 1")
@@ -228,6 +230,20 @@ def resolve_local(value: str | None) -> str | None:
     if value is None:
         return None
     return str(Path(value).resolve()) if Path(value).exists() else value
+
+
+def sampling_of(args) -> dict:
+    return run_config.effective_sampling(
+        args.temperature, args.top_p, args.top_k, args.presence_penalty, getattr(args, "protocol_sampling", None)
+    )
+
+
+def apply_protocol_sampling(args, protocol: dict) -> None:
+    """Fills every sampling field a flag left unset from the model's protocol; a flag that is set wins and shows as a deviation."""
+    args.protocol_sampling = protocol
+    for name in run_config.SAMPLING_FIELDS:
+        if getattr(args, name) is None:
+            setattr(args, name, protocol[name])
 
 
 def case_caps(generation: dict | None) -> dict:
@@ -377,8 +393,8 @@ def build_run_args(
             if args.backend == "api"
             else None
         ),
-        "protocol": dict(run_config.PROTOCOL),
-        "sampling": run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty),
+        "protocol": {**run_config.PROTOCOL, **(getattr(args, "protocol_sampling", {}) if args.backend == "api" else {})},
+        "sampling": sampling_of(args),
         "prompt_sample": sample,
         "per_model": baseline["per_model"],
         "model_input": baseline["model_input"],
@@ -431,7 +447,7 @@ def settings_line(args, revisions: dict, generation: dict | None = None) -> str:
         )
     else:
         cap_text = f"max_new_tokens {d['max_new_tokens']}"
-    sampling = run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty)
+    sampling = sampling_of(args)
     top_k = f", top_k {sampling['top_k']} (extra_body)" if sampling["top_k"] is not None else ""
     if sampling["presence_penalty"] is not None:
         top_k += f", presence_penalty {sampling['presence_penalty']:g}"
@@ -509,7 +525,7 @@ def write_samples(selection, run_dir: Path, n: int, seed: int) -> tuple[dict, di
 
 def protocol_deviations(args) -> list[str]:
     found = []
-    if not run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty)["matches_protocol"]:
+    if not sampling_of(args)["matches_protocol"]:
         found.append("sampling")
     if args.sample_per_case is not None:
         found.append("prompt_sample")
@@ -535,6 +551,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     generation_path = Path(args.generation_config) if args.generation_config else DEFAULT_GENERATION_CONFIG
     try:
         table = run_config.load_generation_config(generation_path)
+        apply_protocol_sampling(args, run_config.resolve_protocol_sampling(table, inputs.model_id, args.backend))
         generation = {
             case.case_id: run_config.resolve_generation(table, case.case_id, inputs.model_id, args.backend)
             for case in selection.cases

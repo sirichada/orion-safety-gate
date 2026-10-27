@@ -22,10 +22,12 @@ raw_<case>.jsonl, which keeps only the reasoning length.
 sample: its sample_ids, or with --only-cut-off exactly those whose finish_reason was "length"
 (read from the raw_<case>.jsonl files beside it). The model must be the same as that run's.
 
---temperature/--top-p/--top-k/--repeats change how the sample is sent (the suite's protocol is
-temperature 0, top_p 1, no top_k): top_k goes out as a top-level request field (or, with
---top-k-location extra_body, inside the request's extra_body object), each prompt is
-sent --repeats times (ids get a __r<k> suffix), and all four are recorded in calibration.json.
+Sampling defaults to the model's protocol in config/generation.json (protocols[model-id], the same
+table the suite reads); a model with no entry is refused. --temperature/--top-p/--top-k/
+--presence-penalty override it, and a run that differs from the protocol is recorded with
+matches_protocol false. top_k goes out inside the request's extra_body (the gateway rejects it as a
+top-level field with HTTP 500); presence_penalty goes out as a top-level field. --repeats sends each
+prompt that many times (ids get a __r<k> suffix). All of it is recorded in calibration.json.
 If any request fails after its retries (a 4xx rejection, or the 500 a gateway returns for an unsupported field), the run stops at once and prints the error
 body; nothing falls back to other settings.
 """
@@ -47,6 +49,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import api_model  # noqa: E402
 import run_config  # noqa: E402
 
+DEFAULT_GENERATION_CONFIG = REPO_ROOT / "config" / "generation.json"
 DEFAULT_CASES = ("en_text", "th_text", "over_refusal")
 PROMPT_FILES = {
     "en_text": REPO_ROOT / "data" / "prompt-sets" / "en_text.jsonl",
@@ -184,15 +187,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_CALIBRATION_CAP, help="Calibration cap sent with every request")
     parser.add_argument("--ids-from", default=None, help="calibration.json of an earlier run: re-send its prompts instead of sampling")
     parser.add_argument("--only-cut-off", action="store_true", help="with --ids-from: only the prompts that were cut off (finish_reason length)")
-    parser.add_argument("--temperature", type=float, default=run_config.PROTOCOL["temperature"])
-    parser.add_argument("--top-p", type=float, default=run_config.PROTOCOL["top_p"])
-    parser.add_argument("--top-k", type=int, default=None, help="Sent as a top-level top_k field when given")
+    parser.add_argument("--temperature", type=float, default=None, help="Default: the model's protocol")
+    parser.add_argument("--top-p", type=float, default=None, help="Default: the model's protocol")
+    parser.add_argument("--top-k", type=int, default=None, help="Sent in the request's extra_body. Default: the model's protocol")
     parser.add_argument(
-        "--top-k-location",
-        choices=("top_level", "extra_body"),
-        default="top_level",
-        help="Where --top-k is sent: a top-level request field, or inside the request's extra_body object",
+        "--presence-penalty", type=float, default=None, help="In [-2, 2], sent as a top-level field. Default: the model's protocol"
     )
+    parser.add_argument("--generation-config", default=None, help="Table holding protocols (default: config/generation.json)")
     parser.add_argument("--no-retries", action="store_true", help="Send every request once; any error ends it as failed")
     parser.add_argument("--repeats", type=int, default=1, help="Sends of each selected prompt")
     parser.add_argument("--api-concurrency", type=int, default=run_config.DEFAULTS["api_concurrency"])
@@ -220,6 +221,22 @@ def main(argv: list[str] | None = None, make_generate=api_model.make_api_generat
         sys.exit("--repeats must be >= 1")
     if args.top_k is not None and args.top_k < 1:
         sys.exit("--top-k must be >= 1")
+    if args.temperature is not None and args.temperature < 0:
+        sys.exit("--temperature must be >= 0")
+    if args.top_p is not None and not 0 < args.top_p <= 1:
+        sys.exit("--top-p must be in (0, 1]")
+    if args.presence_penalty is not None and not -2 <= args.presence_penalty <= 2:
+        sys.exit("--presence-penalty must be in [-2, 2]")
+    generation_path = Path(args.generation_config) if args.generation_config else DEFAULT_GENERATION_CONFIG
+    try:
+        protocol = run_config.resolve_protocol_sampling(run_config.load_generation_config(generation_path), args.model_id, "api")
+    except run_config.GenerationConfigError as e:
+        sys.exit(str(e))
+    args.protocol_sampling = protocol
+    for name in run_config.SAMPLING_FIELDS:
+        if getattr(args, name) is None:
+            setattr(args, name, protocol[name])
+    args.sampling = run_config.effective_sampling(args.temperature, args.top_p, args.top_k, args.presence_penalty, protocol)
     if args.only_cut_off and not args.ids_from:
         sys.exit("--only-cut-off needs --ids-from")
 
@@ -277,6 +294,10 @@ def run(args, cases: list[str], stamp: str, make_generate) -> int:
         print(f"model {args.model} ({args.model_id}); seed {args.seed}; {args.n} prompts per case at cap {args.max_new_tokens}")
     for case_id, case in plan.items():
         print(f"  {case_id}: {len(case['prompts'])} of {len(case['all'])} prompts sampled")
+    label = "" if args.sampling["matches_protocol"] else " [NOT the model's protocol]"
+    top_k = f", top_k {args.top_k} (extra_body)" if args.top_k is not None else ""
+    penalty = f", presence_penalty {args.presence_penalty:g}" if args.presence_penalty is not None else ""
+    print(f"sampling: temperature {args.temperature:g}, top_p {args.top_p:g}{top_k}{penalty}{label}")
     print(f"worst case for the sample: {sample_worst:.2f} THB (THB {price_in:g} in / {price_out:g} out per 1M tokens)")
     if args.max_thb is not None:
         print(f"--max-thb {args.max_thb:g}")
@@ -287,9 +308,12 @@ def run(args, cases: list[str], stamp: str, make_generate) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else OUT_ROOT / stamp
     out_dir.mkdir(parents=True, exist_ok=False)
     spend = api_model.SpendGuard(args.model, args.max_thb, out_dir / "spend_ledger.json")
-    extra = None
+    extra = {}
     if args.top_k is not None:
-        extra = {"extra_body": {"top_k": args.top_k}} if args.top_k_location == "extra_body" else {"top_k": args.top_k}
+        extra["extra_body"] = {"top_k": args.top_k}
+    if args.presence_penalty is not None:
+        extra["presence_penalty"] = args.presence_penalty
+    extra = extra or None
     kwargs = {"extra_params": extra} if extra else {}
     if args.no_retries:
         kwargs["max_attempts"] = 1
@@ -367,7 +391,11 @@ def run(args, cases: list[str], stamp: str, make_generate) -> int:
             "temperature": args.temperature,
             "top_p": args.top_p,
             "top_k": args.top_k,
-            "top_k_location": args.top_k_location if args.top_k is not None else None,
+            "top_k_location": args.sampling["top_k_location"],
+            "presence_penalty": args.presence_penalty,
+            "presence_penalty_location": args.sampling["presence_penalty_location"],
+            "matches_protocol": args.sampling["matches_protocol"],
+            "protocol": args.protocol_sampling,
             "extra_params_sent": extra,
             "retries": not args.no_retries,
             "repeats": args.repeats,

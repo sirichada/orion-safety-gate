@@ -70,6 +70,12 @@ def test_full_run_estimate_uses_prices_prompt_count_and_latency():
     assert cc.estimate_full_run(summary, ["x"], MODEL, None, 3)["worst_case_thb_at_proposed_cap"] is None
 
 
+GREEDY = {"temperature": 0.0, "top_p": 1.0}
+VENDOR = {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
+MANGO = {**VENDOR, "presence_penalty": 1.5}
+GREEDY_FULL = {**GREEDY, "top_k": None, "presence_penalty": None}
+
+
 @pytest.fixture
 def prompt_files(tmp_path, monkeypatch):
     files = {}
@@ -83,6 +89,9 @@ def prompt_files(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "PROMPT_FILES", files)
     monkeypatch.setattr(cc, "OUT_ROOT", tmp_path / "out")
     monkeypatch.setattr(cc, "LOG_DIR", tmp_path / "logs")
+    config = tmp_path / "generation.json"
+    config.write_text(json.dumps({"protocols": {"x": GREEDY, "vendor": VENDOR, "mango": MANGO, "Qwen Flash": GREEDY}}), encoding="utf-8")
+    monkeypatch.setattr(cc, "DEFAULT_GENERATION_CONFIG", config)
     return files
 
 
@@ -287,15 +296,16 @@ def test_sampling_settings_repeats_and_top_k_are_applied_and_recorded(prompt_fil
                     "--temperature", "1.0", "--top-p", "0.95", "--top-k", "20", "--repeats", "2",
                     "--max-new-tokens", "16384"], make_generate=make)
     assert code == 0
-    assert state["kwargs"] == {"extra_params": {"top_k": 20}}
+    assert state["kwargs"] == {"extra_params": {"extra_body": {"top_k": 20}}}
     assert {c for c in state["calls"]} == {(1.0, 0.95)}
     assert state["sent_chunks"][0] == ["prompt 4"]  # the first request goes out alone
     assert [p for chunk in state["sent_chunks"] for p in chunk] == ["prompt 4", "prompt 4", "prompt 7", "prompt 7"]
     run_dir = next(d for d in (tmp_path / "out").iterdir())
     calibration = json.loads((run_dir / "calibration.json").read_text(encoding="utf-8"))
     assert calibration["sampling"] == {
-        "temperature": 1.0, "top_p": 0.95, "top_k": 20, "top_k_location": "top_level",
-        "extra_params_sent": {"top_k": 20}, "retries": True, "repeats": 2,
+        "temperature": 1.0, "top_p": 0.95, "top_k": 20, "top_k_location": "extra_body",
+        "presence_penalty": None, "presence_penalty_location": None, "matches_protocol": False, "protocol": GREEDY_FULL,
+        "extra_params_sent": {"extra_body": {"top_k": 20}}, "retries": True, "repeats": 2,
     }
     ids = [r["id"] for r in read_jsonl(run_dir / "raw_en_text.jsonl")]
     assert ids == ["en_text_4__r1", "en_text_4__r2", "en_text_7__r1", "en_text_7__r2"]
@@ -332,13 +342,14 @@ def test_top_k_in_extra_body_and_no_retries_are_passed_and_recorded(prompt_files
     path = earlier_run(tmp_path)
     make, state = sampling_factory()
     cc.main(["--model", MODEL, "--model-id", "x", "--max-thb", "5", "--ids-from", str(path), "--only-cut-off",
-             "--temperature", "1.0", "--top-p", "0.95", "--top-k", "20", "--top-k-location", "extra_body",
+             "--temperature", "1.0", "--top-p", "0.95", "--top-k", "20",
              "--no-retries"], make_generate=make)
     assert state["kwargs"] == {"extra_params": {"extra_body": {"top_k": 20}}}
     assert state["max_attempts"] == 1
     run_dir = next(d for d in (tmp_path / "out").iterdir())
     sampling = json.loads((run_dir / "calibration.json").read_text(encoding="utf-8"))["sampling"]
     assert sampling["top_k_location"] == "extra_body" and sampling["extra_params_sent"] == {"extra_body": {"top_k": 20}}
+    assert "top_k" not in sampling["extra_params_sent"]  # never a top-level field: the gateway answers 500
     assert sampling["retries"] is False
 
 
@@ -348,3 +359,54 @@ def test_no_sampling_extras_are_recorded_as_none(prompt_files, tmp_path):
     run_dir = next(d for d in (tmp_path / "out").iterdir())
     sampling = json.loads((run_dir / "calibration.json").read_text(encoding="utf-8"))["sampling"]
     assert sampling["top_k"] is None and sampling["top_k_location"] is None and sampling["extra_params_sent"] is None
+
+
+def run_dir_calibration(tmp_path):
+    run_dir = next(d for d in (tmp_path / "out").iterdir())
+    return json.loads((run_dir / "calibration.json").read_text(encoding="utf-8"))
+
+
+def test_the_models_protocol_is_the_default_and_matches(prompt_files, tmp_path):
+    make, state = sampling_factory()
+    cc.main(["--model", MODEL, "--model-id", "vendor", "--max-thb", "5", "--n", "2", "--cases", "en_text"], make_generate=make)
+    assert set(state["calls"]) == {(1.0, 0.95)}
+    assert state["kwargs"] == {"extra_params": {"extra_body": {"top_k": 20}}}
+    sampling = run_dir_calibration(tmp_path)["sampling"]
+    assert sampling["matches_protocol"] is True and sampling["presence_penalty"] is None
+
+
+def test_presence_penalty_from_the_protocol_is_sent_top_level_beside_top_k(prompt_files, tmp_path):
+    make, state = sampling_factory()
+    cc.main(["--model", MODEL, "--model-id", "mango", "--max-thb", "5", "--n", "2", "--cases", "en_text"], make_generate=make)
+    assert state["kwargs"] == {"extra_params": {"extra_body": {"top_k": 20}, "presence_penalty": 1.5}}
+    sampling = run_dir_calibration(tmp_path)["sampling"]
+    assert sampling["presence_penalty"] == 1.5 and sampling["presence_penalty_location"] == "top_level"
+    assert sampling["matches_protocol"] is True
+
+
+def test_a_presence_penalty_flag_is_sent_and_recorded_off_protocol(prompt_files, tmp_path):
+    make, state = sampling_factory()
+    cc.main(["--model", MODEL, "--model-id", "vendor", "--max-thb", "5", "--n", "2", "--cases", "en_text",
+             "--presence-penalty", "1.5"], make_generate=make)
+    assert state["kwargs"] == {"extra_params": {"extra_body": {"top_k": 20}, "presence_penalty": 1.5}}
+    assert run_dir_calibration(tmp_path)["sampling"]["matches_protocol"] is False
+
+
+def test_a_flag_overrides_the_protocol_and_is_recorded_off_protocol(prompt_files, tmp_path):
+    make, state = sampling_factory()
+    cc.main(["--model", MODEL, "--model-id", "vendor", "--max-thb", "5", "--n", "2", "--cases", "en_text",
+             "--temperature", "0"], make_generate=make)
+    assert set(state["calls"]) == {(0.0, 0.95)}
+    assert run_dir_calibration(tmp_path)["sampling"]["matches_protocol"] is False
+
+
+def test_a_model_with_no_protocol_is_refused_even_on_a_dry_run(prompt_files, capsys):
+    for extra in ([], ["--dry-run"]):
+        with pytest.raises(SystemExit, match="no sampling protocol for model 'unlisted'"):
+            cc.main(["--model", MODEL, "--model-id", "unlisted", "--max-thb", "5", *extra],
+                    make_generate=lambda *a, **k: pytest.fail("nothing may be sent"))
+
+
+def test_dry_run_shows_the_resolved_sampling(prompt_files, capsys):
+    cc.main(["--model", MODEL, "--model-id", "mango", "--dry-run", "--n", "2"])
+    assert "sampling: temperature 1, top_p 0.95, top_k 20 (extra_body), presence_penalty 1.5\n" in capsys.readouterr().out

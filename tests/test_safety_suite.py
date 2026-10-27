@@ -18,9 +18,9 @@ BASE = ["--model", "m", "--model-id", "Mango 1.5-9B", "--capabilities", "c.json"
 
 
 def test_wrapper_args_always_forward_every_setting():
-    api = safety_suite.wrapper_args(
-        parse(*BASE, "--backend", "api", "--batch-size", "4", "--max-consecutive-failures", "5", "--max-thb", "12")
-    )
+    api_args = parse(*BASE, "--backend", "api", "--batch-size", "4", "--max-consecutive-failures", "5", "--max-thb", "12")
+    safety_suite.apply_protocol_sampling(api_args, run_config.GREEDY_SAMPLING)
+    api = safety_suite.wrapper_args(api_args)
     assert api == [
         "--model", "m", "--backend", "api", "--batch-size", "4", "--max-consecutive-failures", "5",
         "--temperature", "0.0", "--top-p", "1.0", "--max-new-tokens", "256",
@@ -494,9 +494,16 @@ def test_cases_with_different_environment_are_flagged_not_failed(sandbox, monkey
     assert [m["field"] for m in verdict["run_args"]["config_mismatches"]] == ["provenance.gpu"]
 
 
-def write_generation(sandbox, **models):
+GREEDY = {"temperature": 0.0, "top_p": 1.0}
+VENDOR = {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
+
+
+def write_generation(sandbox, protocols=None, **models):
+    """Caps per model; every model gets the greedy protocol unless protocols says otherwise."""
     path = sandbox / "generation.json"
-    path.write_text(json.dumps({"cases": {}, "models": models}), encoding="utf-8")
+    if protocols is None:
+        protocols = {"x": GREEDY}
+    path.write_text(json.dumps({"cases": {}, "models": models, "protocols": protocols}), encoding="utf-8")
     return str(path)
 
 
@@ -769,3 +776,97 @@ def test_dry_run_bounds_follow_the_sample_size(sandbox, capsys):
     line = next(l for l in out.splitlines() if l.strip().startswith("th_text"))
     assert line.split()[1] == "2"
     assert not (sandbox / "results").exists()
+
+
+# ------------------------------------------------------------- per-model sampling protocol
+
+
+MANGO = {**VENDOR, "presence_penalty": 1.5}
+
+
+def api_args(model_id, *extra):
+    return parse("--model", "m", "--model-id", model_id, "--capabilities", "c.json", "--thresholds", "t.json",
+                 "--backend", "api", "--max-thb", "3", *extra)
+
+
+def committed_protocols():
+    return json.loads(safety_suite.DEFAULT_GENERATION_CONFIG.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("model_id, expected", [
+    ("Qwen 3.8-27B", VENDOR), ("Qwen 3.8-Flash-Next", VENDOR), ("Mango 1.5-9B", MANGO)])
+def test_committed_protocol_fills_unset_sampling_and_matches(model_id, expected):
+    args = api_args(model_id)
+    safety_suite.apply_protocol_sampling(args, run_config.resolve_protocol_sampling(committed_protocols(), model_id, "api"))
+    want = {"top_k": None, "presence_penalty": None, **expected}
+    assert {k: getattr(args, k) for k in want} == want
+    assert safety_suite.sampling_of(args)["matches_protocol"] is True
+    assert safety_suite.protocol_deviations(args) == []
+
+
+def test_presence_penalty_is_part_of_the_mango_protocol_only():
+    config = committed_protocols()
+    mango = api_args("Mango 1.5-9B")
+    safety_suite.apply_protocol_sampling(mango, run_config.resolve_protocol_sampling(config, "Mango 1.5-9B", "api"))
+    assert safety_suite.forwarded_values(mango)["presence_penalty"] == 1.5
+    # Qwen's protocol has none, so Mango's setting on a Qwen run is a deviation
+    qwen = api_args("Qwen 3.8-27B", "--presence-penalty", "1.5")
+    safety_suite.apply_protocol_sampling(qwen, run_config.resolve_protocol_sampling(config, "Qwen 3.8-27B", "api"))
+    assert safety_suite.protocol_deviations(qwen) == ["sampling"]
+
+
+def test_hf_backend_stays_greedy_without_a_protocol_entry():
+    args = parse(*BASE)
+    assert (args.temperature, args.top_p) == (0.0, 1.0)
+    assert run_config.resolve_protocol_sampling({}, "anything", "hf") == run_config.GREEDY_SAMPLING
+    safety_suite.apply_protocol_sampling(args, run_config.resolve_protocol_sampling({}, "anything", "hf"))
+    assert safety_suite.sampling_of(args)["matches_protocol"] is True
+
+
+def test_api_run_without_a_protocol_entry_is_refused_before_any_stage(sandbox):
+    generation = write_generation(sandbox, protocols={"other": GREEDY}, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation)
+    with pytest.raises(SystemExit, match="no sampling protocol for model 'x'"):
+        safety_suite.main(argv, run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
+
+
+def test_api_run_without_a_cap_still_refuses_when_the_protocol_exists(sandbox):
+    generation = write_generation(sandbox, protocols={"x": VENDOR}, other={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation)
+    with pytest.raises(SystemExit, match="no max_new_tokens for case 'th_text' and model 'x'"):
+        safety_suite.main(argv, run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
+
+
+def test_malformed_protocol_entry_is_refused():
+    with pytest.raises(run_config.GenerationConfigError, match="needs numeric temperature and top_p"):
+        run_config.resolve_protocol_sampling({"protocols": {"m": {"temperature": 1.0, "seed": 3}}}, "m", "api")
+
+
+def test_run_with_no_sampling_flags_uses_the_protocol_and_is_not_a_deviation(sandbox):
+    generation = write_generation(sandbox, protocols={"x": {**VENDOR, "presence_penalty": 1.5}},
+                                  x={"th_text": {"max_new_tokens": 4096}})
+    seen = {}
+
+    def stages(cmd, log_path):
+        if cmd[1] == "model_wrapper.py":
+            seen["cmd"] = cmd
+        return fake_stages(cmd, log_path)
+
+    verdict = safety_suite.main(th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation),
+                                run_stage=stages, interactive=False)
+    cmd = seen["cmd"]
+    assert [cmd[cmd.index(f) + 1] for f in ("--temperature", "--top-p", "--top-k", "--presence-penalty")] == [
+        "1.0", "0.95", "20", "1.5"]
+    assert verdict["run_args"]["sampling"]["matches_protocol"] is True
+    assert verdict["protocol_deviations"] == []
+
+
+def test_a_flag_overriding_the_protocol_is_recorded_as_a_deviation(sandbox):
+    generation = write_generation(sandbox, protocols={"x": VENDOR}, x={"th_text": {"max_new_tokens": 4096}})
+    verdict = safety_suite.main(
+        th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation, "--temperature", "0"),
+        run_stage=fake_stages, interactive=False)
+    sampling = verdict["run_args"]["sampling"]
+    assert (sampling["temperature"], sampling["top_p"], sampling["top_k"]) == (0.0, 0.95, 20)
+    assert sampling["matches_protocol"] is False
+    assert verdict["protocol_deviations"] == ["sampling"] and verdict["admitted"] is False
