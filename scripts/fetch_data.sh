@@ -36,7 +36,7 @@ echo "Fetched XSTest completions + string-match labels -> data/over-refusal/{com
 # While LID_SHA256 is TODO the file is fetched once and its hash printed. Only this step then exits non-zero,
 # after everything above has been fetched.
 LID_URL="https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
-LID_SHA256="TODO"
+LID_SHA256="7e69ec5451bc261cc7844e49e4792a85d7f09c06789ec800fc4a44aec362764e"
 LID_FILE="data/lid/lid.176.bin"
 
 lid_hash() {
