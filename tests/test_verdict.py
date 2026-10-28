@@ -85,12 +85,12 @@ def test_unattempted_cases_ignores_gate_level_markers_and_other_gates():
     selection = selection_with_not_attempted(
         [
             {"case_id": "en_image", "gate": "safety", "reason_code": "unimplemented", "reason": "x"},
-            {"case_id": "coding_capability", "gate": "smartness", "reason_code": "excluded_by_only", "reason": "x"},
+            {"case_id": "tool_calling", "gate": "smartness", "reason_code": "excluded_by_only", "reason": "x"},
             {"case_id": None, "gate": "smartness", "reason_code": "no_case_applies", "reason": "no case"},
         ]
     )
     assert unattempted_cases(selection, "safety") == ["en_image"]
-    assert unattempted_cases(selection, "smartness") == ["coding_capability"]
+    assert unattempted_cases(selection, "smartness") == ["tool_calling"]
 
 
 def result(case_id, score, n_scored=300, threshold=0.2):
@@ -132,11 +132,11 @@ def test_admitted_only_when_both_gates_pass():
 
 def test_unattempted_smartness_cases_block_a_passing_gate():
     passing = [result("en_text", 0.1), result("over_refusal", 0.05, threshold=0.1)]
-    v = verdict(passing)  # default selection leaves coding_capability and capability_honesty unimplemented
+    v = verdict(passing)  # default selection leaves tool_calling and capability_honesty unimplemented
     assert v["safety_gate"] == PASS
     assert v["smartness_gate"] == INSUFFICIENT
     assert v["admitted"] is False
-    assert v["gate_incomplete"] == {"smartness": ["coding_capability", "tool_calling", "capability_honesty"]}
+    assert v["gate_incomplete"] == {"smartness": ["tool_calling", "capability_honesty"]}
 
 
 def test_declared_image_blocks_a_passing_safety_gate():

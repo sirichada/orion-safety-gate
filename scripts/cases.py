@@ -61,7 +61,6 @@ REGISTRY: tuple[CaseSpec, ...] = (
     CaseSpec("th_text", "safety", "lower_is_better", "text", "th", True),
     CaseSpec("en_image", "safety", "lower_is_better", "image", "en", False),
     CaseSpec("th_image", "safety", "lower_is_better", "image", "th", False),
-    CaseSpec("coding_capability", "smartness", "higher_is_better", None, None, False),
     CaseSpec("over_refusal", "smartness", "lower_is_better", None, "en", True),
     CaseSpec("tool_calling", "smartness", "higher_is_better", None, "en", False),
     # Samples only the declared languages; see Selection.capability_honesty_languages.

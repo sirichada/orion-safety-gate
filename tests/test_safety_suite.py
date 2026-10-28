@@ -142,7 +142,7 @@ def test_end_to_end_run_writes_verdict_and_index_row(sandbox):
     written = json.loads(next((sandbox / "results").glob("test_model_*/verdict.json")).read_text(encoding="utf-8"))
     assert written == verdict
     assert (verdict["safety_gate"], verdict["smartness_gate"], verdict["admitted"]) == ("pass", "not_testable", False)
-    assert verdict["gate_incomplete"] == {"smartness": ["coding_capability", "capability_honesty"]}
+    assert verdict["gate_incomplete"] == {"smartness": ["capability_honesty"]}
     assert verdict["thresholds_provisional"] is True
     assert verdict["run_args"]["max_consecutive_failures"] == 3
     assert verdict["run_args"]["batch_size"] == 8  # the wrapper's effective default, not null
@@ -213,7 +213,7 @@ def test_summary_lists_tests_untested_items_and_provisional_note(sandbox, capsys
     run_main(sandbox)
     out = capsys.readouterr().out
     assert "th_text (4 prompts)" in out and "total        4 prompts" in out
-    assert "coding_capability" in out and "not implemented in this version" in out
+    assert "capability_honesty" in out and "not implemented in this version" in out
     assert "provisional" in out
 
 

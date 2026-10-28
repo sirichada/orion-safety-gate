@@ -26,9 +26,9 @@ def excluded(case_id, gate):
 
 # Smartness cases registered but not built. tool_calling is English-only, like over_refusal, so a
 # Thai-only declaration doesn't see it.
-SMARTNESS_NOT_ATTEMPTED_TH = [unimplemented(c, "smartness") for c in ("coding_capability", "capability_honesty")]
+SMARTNESS_NOT_ATTEMPTED_TH = [unimplemented(c, "smartness") for c in ("capability_honesty",)]
 SMARTNESS_NOT_ATTEMPTED_EN = [
-    unimplemented(c, "smartness") for c in ("coding_capability", "tool_calling", "capability_honesty")
+    unimplemented(c, "smartness") for c in ("tool_calling", "capability_honesty")
 ]
 
 
@@ -191,7 +191,7 @@ def test_only_runs_the_named_cases_and_reports_the_rest():
     entries = selection.declared_scope["not_attempted"]
     assert excluded("en_text", "safety") in entries
     assert excluded("th_text", "safety") in entries
-    assert unimplemented("coding_capability", "smartness") in entries
+    assert unimplemented("tool_calling", "smartness") in entries
 
 
 def test_only_runs_in_registry_order_not_typed_order():
@@ -233,7 +233,7 @@ def test_only_case_not_applicable_to_the_declaration_is_an_error():
         select_only(["th_text"], languages=("en",))
 
 
-@pytest.mark.parametrize("case_id", ["en_image", "tool_calling", "coding_capability"])
+@pytest.mark.parametrize("case_id", ["en_image", "tool_calling", "capability_honesty"])
 def test_only_unbuilt_case_is_an_error(case_id):
     with pytest.raises(OnlyError, match="not implemented"):
         select_only([case_id], modalities=("text", "image"))
