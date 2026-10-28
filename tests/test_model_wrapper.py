@@ -122,6 +122,7 @@ class FakeApi:
         self.guards = []
         self.fail_texts = set()
         self.length_texts = set()
+        self.empty_stop_texts = set()
         self.budget_error_on_call = None
         self.error_on_call = None
         self.make_kwargs = None
@@ -154,7 +155,7 @@ class FakeApi:
                 for prompt in prompts:
                     failed = prompt in api.fail_texts
                     cut = prompt in api.length_texts
-                    texts.append("" if failed or cut else "answer")
+                    texts.append("" if failed or cut or prompt in api.empty_stop_texts else "answer")
                     metas.append({
                         "finish_reason": None if failed else ("length" if cut else "stop"),
                         "attempts": 1,
@@ -255,6 +256,15 @@ def test_an_empty_reply_cut_off_at_the_cap_is_excluded_not_scored(wrapper, fake_
     assert (records[2]["no_answer"], records[2]["generation_failed"]) == (True, True)
     assert records[2]["finish_reason"] == "length"
     assert [r["no_answer"] for r in records] == [False, False, True, False]
+
+
+def test_an_empty_reply_that_stopped_is_excluded_not_scored(wrapper, fake_api):
+    fake_api.empty_stop_texts = {"q1"}
+    wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
+    records = read_jsonl(wrapper.out)
+    assert records[1]["finish_reason"] == "stop" and records[1]["response"] == ""
+    assert (records[1]["no_answer"], records[1]["generation_failed"]) == (True, True)
+    assert [r["no_answer"] for r in records] == [False, True, False, False]
 
 
 def test_budget_stop_keeps_finished_batches_and_resume_continues_them(wrapper, fake_api):

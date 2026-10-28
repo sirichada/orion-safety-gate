@@ -465,13 +465,13 @@ def main():
     def failed_meta() -> dict:
         return {"finish_reason": None, "attempts": None, "failed": True}
 
-    def is_no_answer(response: str | None, finish: str | None) -> bool:
-        return response is not None and not response.strip() and finish == "length"
+    def is_no_answer(response: str | None) -> bool:
+        return response is not None and not response.strip()
 
     def answered(k: int) -> bool:
         if responses[k] is None:
             return False
-        return not api or not is_no_answer(responses[k], finish_reasons[k])
+        return not api or not is_no_answer(responses[k])
 
     def fill_record(k: int, record: dict, response: str | None) -> None:
         record["response"] = response if response is not None else ""
@@ -479,9 +479,10 @@ def main():
         if api:
             meta = metas[k]
             finish = finish_reasons[k]
-            # An empty completion cut off at the token cap never answered: it must not be scored as a refusal.
+            # A reply with empty content never answered, whatever its finish_reason (cut off at the cap, or
+            # stopped with the text only in the reasoning channel): it must not be scored as a refusal.
             # generation_failed is the flag every scorer already excludes; no_answer keeps the cause distinguishable.
-            no_answer = is_no_answer(response, finish)
+            no_answer = is_no_answer(response)
             record["finish_reason"] = finish
             record["attempts"] = attempts[k]
             record["no_answer"] = no_answer
@@ -618,7 +619,7 @@ def main():
             f"recovered: {sum(1 for r in retried if not r['no_answer'])}"
         )
         print(
-            f"no_answer (still empty at finish_reason=length after all attempts): {n_no_answer}/{len(records)} "
+            f"no_answer (empty content after all attempts): {n_no_answer}/{len(records)} "
             "-- flagged generation_failed so scorers exclude them from the rate"
         )
         total_cost = sum(r.get("cost_thb") or 0.0 for r in records)
