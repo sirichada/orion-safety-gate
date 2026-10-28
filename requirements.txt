@@ -9,3 +9,5 @@ protobuf
 httpx
 pytest
 questionary
+fasttext==0.9.3
+numpy<2
