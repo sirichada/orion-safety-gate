@@ -18,10 +18,16 @@ sidecar, is a suite error and stops the whole run.
 
 Every generation stage also leaves <responses>.run_config.json (see run_config.py);
 a case whose generation finished or stopped without one is a suite error.
+
+A derived case (cases.CaseSpec.sources) has no generation stage: it scores the
+responses files its source cases left in the same run folder, in one scorer
+subprocess, and leaves no run_config report. A source that was stopped leaves its
+.stopped.json sidecar, and the derived case is then insufficient_data without scoring.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -32,6 +38,7 @@ from pathlib import Path
 from typing import Callable
 
 import run_config
+import score_en_integrity
 from cases import CaseSpec, Selection
 from verdict import build_case_result
 
@@ -59,7 +66,7 @@ class SuiteError(RuntimeError):
 
 @dataclass(frozen=True)
 class CaseRunner:
-    prompts: Path
+    prompts: Path | None  # None for a derived case, which sends no prompts
     scorer: str  # script name under scripts/, also the module whose aggregate() is used
     scoring_method: str
 
@@ -70,6 +77,7 @@ CASE_RUNNERS: dict[str, CaseRunner] = {
     "over_refusal": CaseRunner(
         REPO_ROOT / "data" / "prompt-sets" / "over_refusal.jsonl", "score_over_refusal", "string_match"
     ),
+    "en_integrity": CaseRunner(None, "score_en_integrity", score_en_integrity.SCORING_METHOD),
 }
 
 RunStage = Callable[[list[str], Path], int]
@@ -110,24 +118,61 @@ def count_lines(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
 
+def lid_problems() -> list[str]:
+    """What stops score_en_integrity from running in this interpreter, which also runs the scorer subprocess."""
+    problems = []
+    if importlib.util.find_spec("fasttext") is None:
+        problems.append(
+            f"fasttext is not importable from {sys.executable}; install fasttext==0.9.3 into this interpreter "
+            '(Windows: set CL="/std:c++17 /Dssize_t=ptrdiff_t" first)'
+        )
+    if not score_en_integrity.LID_MODEL_PATH.exists():
+        problems.append(f"fastText language-ID model not found at {score_en_integrity.LID_MODEL_PATH}; run scripts/fetch_data.sh")
+    return problems
+
+
+def integrity_config_problems(case_id: str, entry: dict) -> list[str]:
+    problems = []
+    line_rule = entry.get("line_rule", score_en_integrity.DEFAULT_LINE_RULE)
+    if line_rule not in score_en_integrity.LINE_RULES:
+        problems.append(f"{case_id}: line_rule must be one of {score_en_integrity.LINE_RULES}, got {line_rule!r}")
+    share = entry.get("share_threshold", score_en_integrity.DEFAULT_SHARE_THRESHOLD)
+    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share <= 1:
+        problems.append(f"{case_id}: share_threshold must be a number in (0, 1], got {share!r}")
+    return problems
+
+
 def preflight(selection: Selection, thresholds: dict) -> None:
     """Fails before any generation if a selected case can't be run or judged."""
     problems = []
+    selected = {case.case_id for case in selection.cases}
     for case in selection.cases:
         runner = CASE_RUNNERS.get(case.case_id)
         if runner is None:
             problems.append(f"{case.case_id}: no runner registered")
+        elif case.derived:
+            missing = [source for source in case.sources if source not in selected]
+            if missing:
+                problems.append(f"{case.case_id}: its source cases are not in this run: {', '.join(missing)}")
         elif not runner.prompts.exists():
             problems.append(f"{case.case_id}: prompt file missing ({runner.prompts}); run its loader first")
         entry = thresholds.get("cases", {}).get(case.case_id)
         if entry is None or "threshold" not in entry or "min_scored" not in entry:
             problems.append(f"{case.case_id}: thresholds config needs 'threshold' and 'min_scored'")
+        elif runner is not None and runner.scorer == "score_en_integrity":
+            problems.extend(integrity_config_problems(case.case_id, entry))
+        if runner is not None and runner.scorer == "score_en_integrity":
+            problems.extend(f"{case.case_id}: {problem}" for problem in lid_problems())
     if problems:
         raise SuiteError("Preflight failed:\n  " + "\n  ".join(problems))
 
 
+def responses_file(run_dir: Path, case_id: str) -> Path:
+    return run_dir / f"responses_{case_id}.jsonl"
+
+
 def responses_path(run_dir: Path, case: CaseSpec) -> Path:
-    return run_dir / f"responses_{case.case_id}.jsonl"
+    return responses_file(run_dir, case.case_id)
 
 
 def read_run_config(responses: Path, case_id: str) -> dict:
@@ -152,6 +197,8 @@ def run_case(
     generation: dict | None = None,
     prompts: Path | None = None,
 ) -> dict:
+    if case.derived:
+        return run_derived_case(case, run_dir, thresholds, run_stage=run_stage, timestamp=timestamp)
     runner = CASE_RUNNERS[case.case_id]
     prompts = prompts or runner.prompts
     entry = thresholds["cases"][case.case_id]
@@ -233,6 +280,84 @@ def run_case(
     costs = [r["cost_thb"] for r in generated if r.get("cost_thb") is not None]
     generation_report["cost_thb"] = round(sum(costs), 6) if costs else None
     return result(summary["score"], summary["n_scored"], summary.get("notes", ""), runner.scoring_method)
+
+
+def run_derived_case(
+    case: CaseSpec,
+    run_dir: Path,
+    thresholds: dict,
+    run_stage: RunStage = run_subprocess,
+    timestamp: str | None = None,
+) -> dict:
+    """Scores the saved replies of case.sources; sends nothing to the candidate."""
+    runner = CASE_RUNNERS[case.case_id]
+    entry = thresholds["cases"][case.case_id]
+    stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
+    source_paths = {source: responses_file(Path(run_dir), source).resolve() for source in case.sources}
+    scored = Path(run_dir).resolve() / f"scored_{case.case_id}.jsonl"
+    review = Path(run_dir).resolve() / f"review_{case.case_id}.csv"
+    line_rule = entry.get("line_rule", score_en_integrity.DEFAULT_LINE_RULE)
+    share_threshold = entry.get("share_threshold", score_en_integrity.DEFAULT_SHARE_THRESHOLD)
+
+    existing = {source: path for source, path in source_paths.items() if path.exists()}
+    n_prompts = sum(count_lines(path) for path in existing.values())
+    generation_report = {"max_new_tokens": None, "n_excluded": None, "n_no_answer": None, "cost_thb": None}
+
+    def result(score, n_scored, notes, scoring_method):
+        return build_case_result(
+            case,
+            score=score,
+            n_prompts=n_prompts,
+            n_scored=n_scored,
+            threshold=entry["threshold"],
+            min_scored=entry["min_scored"],
+            scoring_method=scoring_method,
+            notes=notes,
+            max_excluded_fraction=entry.get("max_excluded_fraction"),
+            **generation_report,
+        )
+
+    stopped = [source for source, path in source_paths.items() if Path(str(path) + ".stopped.json").exists()]
+    if stopped:
+        return result(None, 0, f"not scored: {', '.join(stopped)} stopped before completing, so the reply pool is incomplete", None)
+    absent = [source for source in case.sources if source not in existing]
+    if absent:
+        raise SuiteError(f"{case.case_id}: no responses file for {', '.join(absent)} in {run_dir}")
+
+    cmd = [
+        sys.executable,
+        f"{runner.scorer}.py",
+        "--responses",
+        *(f"{source}={path}" for source, path in source_paths.items()),
+        "--out",
+        str(scored),
+        "--review",
+        str(review),
+        "--line-rule",
+        line_rule,
+        "--share-threshold",
+        str(share_threshold),
+    ]
+    code = run_stage(cmd, LOGS / f"{runner.scorer}_{case.case_id}_{stamp}.log")
+    if code != 0:
+        raise SuiteError(f"{case.case_id}: scoring exited with code {code}")
+
+    summary = _aggregate(runner.scorer, read_jsonl(scored))
+    generation_report["n_excluded"] = summary.get("n_generation_failed")
+    generation_report["n_no_answer"] = sum(
+        1 for path in existing.values() for r in read_jsonl(path) if r.get("no_answer")
+    )
+    hashes = ", ".join(f"{source} sha256={run_config.file_sha256(path)}" for source, path in source_paths.items())
+    notes = "; ".join(
+        part
+        for part in (
+            f"line_rule={line_rule}, share_threshold={share_threshold}",
+            f"scored the saved replies of {hashes}",
+            summary.get("notes", ""),
+        )
+        if part
+    )
+    return result(summary["score"], summary["n_scored"], notes, runner.scoring_method)
 
 
 def _has_api_fields(records: list[dict]) -> bool:

@@ -1,8 +1,20 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 # Scripts import each other by bare module name, so tests need scripts/ on the path the same way.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import orchestrator  # noqa: E402
+
+REAL_LID_PROBLEMS = orchestrator.lid_problems
+
+
+@pytest.fixture(autouse=True)
+def lid_available(monkeypatch):
+    """Tests run on machines without fastText or the language-ID model; the real check has its own tests."""
+    monkeypatch.setattr(orchestrator, "lid_problems", lambda: [])
 
 
 def stage_report_for(cmd: list[str], **overrides) -> dict:

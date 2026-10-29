@@ -414,7 +414,7 @@ def build_run_args(
 def format_run_summary(
     args, inputs: Inputs, selection, thresholds: dict, revisions: dict | None = None, generation: dict | None = None
 ) -> str:
-    counts = {case.case_id: count_lines(CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
+    counts = {case.case_id: count_lines(CASE_RUNNERS[case.case_id].prompts) for case in selection.generating_cases}
     if getattr(args, "sample_per_case", None) is not None:
         counts = {cid: min(n, args.sample_per_case) for cid, n in counts.items()}
     lines = [
@@ -428,6 +428,12 @@ def format_run_summary(
     if selection.run_scope == "partial":
         ran = ", ".join(case.case_id for case in selection.cases)
         lines.insert(1, f"  scope        Partial run: {ran} only. Not an admission verdict.")
+    derived = [case for case in selection.cases if case.derived]
+    if derived:
+        lines.append(
+            "  scored from  "
+            + "; ".join(f"{case.case_id} (replies of {', '.join(case.sources)}; no prompts sent)" for case in derived)
+        )
     not_attempted = not_attempted_summary(selection)
     if not_attempted:
         lines.append("  not tested   " + "; ".join(not_attempted))
@@ -476,7 +482,7 @@ def collect_run_config(
     A difference in anything that defines what was tested stops the run without a verdict.
     """
     reports = {}
-    for case in selection.cases:
+    for case in selection.generating_cases:
         expected = forwarded_values(args, revisions, (generation or {}).get(case.case_id))
         report = read_run_config(responses_path(run_dir, case), case.case_id)
         problems = run_config.check_forwarded(expected, report)
@@ -514,7 +520,7 @@ def sample_records(path: Path, n: int, seed: int, case_id: str) -> list[dict]:
 def write_samples(selection, run_dir: Path, n: int, seed: int) -> tuple[dict, dict]:
     """Writes each case's sample into the run folder; returns (case id -> path, the record for run_args)."""
     paths, ids = {}, {}
-    for case in selection.cases:
+    for case in selection.generating_cases:
         records = sample_records(CASE_RUNNERS[case.case_id].prompts, n, seed, case.case_id)
         path = run_dir / f"prompts_{case.case_id}.jsonl"
         path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8")
@@ -554,7 +560,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         apply_protocol_sampling(args, run_config.resolve_protocol_sampling(table, inputs.model_id, args.backend))
         generation = {
             case.case_id: run_config.resolve_generation(table, case.case_id, inputs.model_id, args.backend)
-            for case in selection.cases
+            for case in selection.generating_cases
         }
     except run_config.GenerationConfigError as e:
         raise SuiteError(str(e)) from e
@@ -575,7 +581,8 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
             raise Cancelled()
 
     if args.resume:
-        run_dir = Path(args.resume)
+        # The stages run from scripts/, so a relative folder would point somewhere else there.
+        run_dir = Path(args.resume).resolve()
         if not run_dir.is_dir():
             raise SuiteError(f"--resume: {run_dir} is not a run folder")
     else:
@@ -593,11 +600,11 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
             run_case(
                 case,
                 run_dir,
-                wrapper_args(args, revisions, generation[case.case_id], ledger),
+                [] if case.derived else wrapper_args(args, revisions, generation[case.case_id], ledger),
                 thresholds,
                 run_stage=run_stage,
                 timestamp=stamp,
-                generation=generation[case.case_id],
+                generation=generation.get(case.case_id),
                 prompts=sample_paths.get(case.case_id),
             )
             for case in selection.cases
@@ -611,7 +618,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         raise
     baseline, flags = collect_run_config(selection, run_dir, args, revisions, generation)
     prompt_sets = run_config.prompt_set_hashes(
-        {case.case_id: sample_paths.get(case.case_id, CASE_RUNNERS[case.case_id].prompts) for case in selection.cases}
+        {case.case_id: sample_paths.get(case.case_id, CASE_RUNNERS[case.case_id].prompts) for case in selection.generating_cases}
     )
     verdict = build_verdict(
         inputs.model_id,
@@ -643,7 +650,8 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     scope = "; scope=partial" if verdict["run_scope"] == "partial" else ""
     if verdict["protocol_deviations"]:
         scope += "; non-protocol: " + "+".join(verdict["protocol_deviations"])
-    append_index_row(stamp, inputs.model_id, f"cases: {cases}{scope}", outcome, f"{run_dir.relative_to(REPO_ROOT)}/, {out}")
+    folder = run_dir.relative_to(REPO_ROOT) if run_dir.is_relative_to(REPO_ROOT) else run_dir
+    append_index_row(stamp, inputs.model_id, f"cases: {cases}{scope}", outcome, f"{folder}/, {out}")
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
     return verdict
@@ -682,7 +690,7 @@ def format_dry_run(args, selection, generation: dict, calibration_file: str | No
     rows = []
     total_worst = total_expected = 0.0
     expected_known = calibration is not None
-    for case in selection.cases:
+    for case in selection.generating_cases:
         runner = CASE_RUNNERS[case.case_id]
         cap = generation[case.case_id]["max_new_tokens"]
         if args.sample_per_case is not None:

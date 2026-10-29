@@ -8,8 +8,8 @@ import pytest
 import orchestrator
 import run_config
 from capabilities import parse_capabilities
-from conftest import stage_report_for
-from cases import REGISTRY, select_cases
+from conftest import REAL_LID_PROBLEMS, stage_report_for
+from cases import REGISTRY, OnlyError, select_cases
 from orchestrator import (
     ABORTED_EXIT_CODE,
     BUDGET_EXIT_CODE,
@@ -258,3 +258,221 @@ def test_aborted_api_generation_is_a_suite_error_that_keeps_the_partial_response
         run_case(TH_TEXT, tmp_path, [], THRESHOLDS, run_stage=aborts, timestamp="t")
     assert (tmp_path / "responses_th_text.jsonl").exists()
     assert not list(tmp_path.glob("*.aborted.json"))
+
+
+# --- derived cases ---
+
+EN_INTEGRITY = next(case for case in REGISTRY if case.case_id == "en_integrity")
+INTEGRITY_THRESHOLDS = {
+    "provisional": True,
+    "cases": {"en_integrity": {"threshold": 0, "min_scored": 1, "line_rule": "any_line", "share_threshold": 0.25}},
+}
+GOOD = "Here is a clear and helpful answer to the question that was asked."
+
+
+def write_replies(run_dir, case_id, replies):
+    path = run_dir / f"responses_{case_id}.jsonl"
+    path.write_text(
+        "".join(json.dumps({"id": f"{case_id}_{i}", **reply}) + "\n" for i, reply in enumerate(replies)),
+        encoding="utf-8",
+    )
+    return path
+
+
+def ok(text=GOOD):
+    return {"response": text, "finish_reason": "stop"}
+
+
+class IntegrityStages:
+    """Runs the real scorer in-process with a stub language identifier, so the command line is parsed for real."""
+
+    def __init__(self, code=0):
+        self.code, self.calls = code, []
+
+    def __call__(self, cmd, log_path):
+        self.calls.append(cmd)
+        if self.code:
+            return self.code
+        import score_en_integrity
+
+        score_en_integrity.main(cmd[2:], identify=lambda line: "en")
+        return 0
+
+
+@pytest.fixture
+def replies(tmp_path):
+    write_replies(tmp_path, "over_refusal", [ok(), ok(), {"response": "", "finish_reason": "stop", "no_answer": True, "generation_failed": True}])
+    write_replies(tmp_path, "en_text", [ok(), {"response": "", "finish_reason": "stop", "generation_failed": True}])
+    return tmp_path
+
+
+def test_derived_case_scores_the_saved_replies_and_sends_nothing(replies):
+    stages = IntegrityStages()
+    result = run_case(EN_INTEGRITY, replies, ["--model", "m"], INTEGRITY_THRESHOLDS, run_stage=stages, timestamp="t")
+
+    assert len(stages.calls) == 1 and stages.calls[0][1] == "score_en_integrity.py"
+    cmd = stages.calls[0]
+    assert cmd[cmd.index("--responses") + 1 : cmd.index("--out")] == [
+        f"over_refusal={replies / 'responses_over_refusal.jsonl'}",
+        f"en_text={replies / 'responses_en_text.jsonl'}",
+    ]
+    assert cmd[cmd.index("--line-rule") + 1] == "any_line" and cmd[cmd.index("--share-threshold") + 1] == "0.25"
+    assert (replies / "scored_en_integrity.jsonl").exists() and (replies / "review_en_integrity.csv").exists()
+    # 5 replies in the pool: 2 good over_refusal replies and an empty answer (a failed sample, scored), plus
+    # 1 good and 1 HTTP failure (excluded) from en_text.
+    assert result["n_prompts"] == 5
+    assert (result["n_scored"], result["n_excluded"], result["n_no_answer"]) == (4, 1, 1)
+    assert result["score"] == 0.75
+    assert result["scoring_method"] == "fasttext_line_script_degeneracy"
+    assert result["status"] == "pass"  # the placeholder threshold 0 is met by any score
+    assert result["per_language"] == {"en": {"pass": True, "n_samples": 4, "pass_rate": 0.75}}
+    assert result["max_new_tokens"] is None and result["cost_thb"] is None
+
+
+def test_derived_case_notes_record_the_rule_and_the_source_hashes(replies):
+    result = run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(), timestamp="t")
+    assert "line_rule=any_line, share_threshold=0.25" in result["notes"]
+    for case_id in ("over_refusal", "en_text"):
+        digest = run_config.file_sha256(replies / f"responses_{case_id}.jsonl")
+        assert f"{case_id} sha256={digest}" in result["notes"]
+
+
+def test_a_threshold_from_the_config_decides_pass_or_fail(replies):
+    strict = {"cases": {"en_integrity": {"threshold": 0.95, "min_scored": 1}}}
+    result = run_case(EN_INTEGRITY, replies, [], strict, run_stage=IntegrityStages(), timestamp="t")
+    assert (result["score"], result["status"]) == (0.75, "fail")
+
+
+def test_line_rule_and_share_threshold_come_from_the_config(replies):
+    config = {"cases": {"en_integrity": {"threshold": 0, "min_scored": 1, "line_rule": "share_of_lines", "share_threshold": 0.5}}}
+    stages = IntegrityStages()
+    run_case(EN_INTEGRITY, replies, [], config, run_stage=stages, timestamp="t")
+    cmd = stages.calls[0]
+    assert cmd[cmd.index("--line-rule") + 1] == "share_of_lines" and cmd[cmd.index("--share-threshold") + 1] == "0.5"
+
+
+def test_a_stopped_source_makes_the_derived_case_insufficient_without_scoring(replies):
+    (replies / "responses_over_refusal.jsonl.stopped.json").write_text("{}", encoding="utf-8")
+    stages = IntegrityStages()
+    result = run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=stages, timestamp="t")
+    assert stages.calls == []
+    assert (result["status"], result["score"], result["n_scored"]) == ("insufficient_data", None, 0)
+    assert "over_refusal stopped" in result["notes"]
+
+
+def test_a_source_that_is_insufficient_for_other_reasons_does_not_block_scoring(replies):
+    # The sources' own verdicts are not read: integrity is about the replies, which are all there.
+    result = run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(), timestamp="t")
+    assert result["score"] is not None
+
+
+def test_a_missing_source_file_is_a_suite_error(replies):
+    (replies / "responses_en_text.jsonl").unlink()
+    with pytest.raises(SuiteError, match="no responses file for en_text"):
+        run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(), timestamp="t")
+
+
+def test_a_failing_integrity_scorer_is_a_suite_error(replies):
+    with pytest.raises(SuiteError, match="scoring exited with code 1"):
+        run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(code=1), timestamp="t")
+
+
+def test_an_all_excluded_pool_is_insufficient(tmp_path):
+    failed = {"response": "", "generation_failed": True}
+    write_replies(tmp_path, "over_refusal", [failed])
+    write_replies(tmp_path, "en_text", [failed])
+    result = run_case(EN_INTEGRITY, tmp_path, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(), timestamp="t")
+    assert (result["score"], result["n_scored"], result["status"]) == (None, 0, "insufficient_data")
+
+
+# --- preflight for derived cases ---
+
+
+@pytest.fixture
+def english_runners(tmp_path, monkeypatch):
+    for case_id, scorer in (("en_text", "score_en_text"), ("over_refusal", "score_over_refusal")):
+        prompts = tmp_path / f"{case_id}.jsonl"
+        prompts.write_text(json.dumps({"id": "a"}) + "\n", encoding="utf-8")
+        monkeypatch.setitem(orchestrator.CASE_RUNNERS, case_id, CaseRunner(prompts, scorer, "x"))
+
+
+def english_selection(only=None):
+    capabilities = parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["en"]})
+    return select_cases(capabilities, only=only)
+
+
+def english_thresholds(**integrity):
+    entry = {"threshold": 0, "min_scored": 100, "line_rule": "any_line", "share_threshold": 0.25, **integrity}
+    plain = {"threshold": 0.2, "min_scored": 1}
+    return {"cases": {"en_text": plain, "over_refusal": plain, "en_integrity": entry}}
+
+
+def test_preflight_accepts_a_derived_case_with_no_prompt_file_and_a_zero_threshold(english_runners):
+    preflight(english_selection(), english_thresholds())
+    assert orchestrator.CASE_RUNNERS["en_integrity"].prompts is None
+
+
+@pytest.mark.parametrize(
+    "integrity, message",
+    [
+        ({"line_rule": "most_lines"}, "line_rule must be one of"),
+        ({"share_threshold": 0}, "share_threshold must be a number in"),
+        ({"share_threshold": 1.5}, "share_threshold must be a number in"),
+        ({"share_threshold": True}, "share_threshold must be a number in"),
+        ({"share_threshold": "0.25"}, "share_threshold must be a number in"),
+    ],
+)
+def test_preflight_rejects_a_bad_integrity_rule_config(english_runners, integrity, message):
+    with pytest.raises(SuiteError, match=message):
+        preflight(english_selection(), english_thresholds(**integrity))
+
+
+def test_preflight_requires_the_integrity_threshold_entry(english_runners):
+    thresholds = english_thresholds()
+    del thresholds["cases"]["en_integrity"]
+    with pytest.raises(SuiteError, match="en_integrity: thresholds config needs"):
+        preflight(english_selection(), thresholds)
+
+
+def test_preflight_reports_a_derived_case_whose_source_is_not_selected(english_runners):
+    selection = english_selection()
+    broken = type(selection)(
+        cases=tuple(c for c in selection.cases if c.case_id != "over_refusal"),
+        not_testable_gates=selection.not_testable_gates,
+        declared_scope=selection.declared_scope,
+    )
+    with pytest.raises(SuiteError, match="source cases are not in this run: over_refusal"):
+        preflight(broken, english_thresholds())
+
+
+def test_preflight_surfaces_the_language_id_problems(english_runners, monkeypatch):
+    monkeypatch.setattr(orchestrator, "lid_problems", lambda: ["fasttext is not importable from /x/python"])
+    with pytest.raises(SuiteError, match="en_integrity: fasttext is not importable from /x/python"):
+        preflight(english_selection(), english_thresholds())
+
+
+def test_preflight_skips_the_language_id_check_when_the_derived_case_is_not_selected(english_runners, monkeypatch):
+    monkeypatch.setattr(orchestrator, "lid_problems", lambda: pytest.fail("no integrity case, no check"))
+    preflight(english_selection(only=["en_text"]), english_thresholds())
+
+
+def test_lid_problems_name_the_interpreter_and_the_build_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr(orchestrator.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(orchestrator.score_en_integrity, "LID_MODEL_PATH", tmp_path / "lid.176.bin")
+    problems = REAL_LID_PROBLEMS()
+    assert len(problems) == 2
+    assert sys.executable in problems[0] and "fasttext==0.9.3" in problems[0] and "/Dssize_t=ptrdiff_t" in problems[0]
+    assert "lid.176.bin" in problems[1] and "fetch_data.sh" in problems[1]
+
+
+def test_lid_problems_are_empty_when_both_are_present(monkeypatch, tmp_path):
+    model = tmp_path / "lid.176.bin"
+    model.write_bytes(b"x")
+    monkeypatch.setattr(orchestrator.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(orchestrator.score_en_integrity, "LID_MODEL_PATH", model)
+    assert REAL_LID_PROBLEMS() == []
+
+
+def test_a_derived_case_never_goes_through_the_generation_path(replies, monkeypatch):
+    monkeypatch.setattr(orchestrator, "responses_path", lambda *a: pytest.fail("derived cases write no responses"))
+    run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(), timestamp="t")

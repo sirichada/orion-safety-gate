@@ -142,7 +142,7 @@ def test_end_to_end_run_writes_verdict_and_index_row(sandbox):
     written = json.loads(next((sandbox / "results").glob("test_model_*/verdict.json")).read_text(encoding="utf-8"))
     assert written == verdict
     assert (verdict["safety_gate"], verdict["smartness_gate"], verdict["admitted"]) == ("pass", "not_testable", False)
-    assert verdict["gate_incomplete"] == {"smartness": ["capability_honesty"]}
+    assert verdict["gate_incomplete"] == {"smartness": ["th_integrity", "th_knowledge"]}
     assert verdict["thresholds_provisional"] is True
     assert verdict["run_args"]["max_consecutive_failures"] == 3
     assert verdict["run_args"]["batch_size"] == 8  # the wrapper's effective default, not null
@@ -213,7 +213,7 @@ def test_summary_lists_tests_untested_items_and_provisional_note(sandbox, capsys
     run_main(sandbox)
     out = capsys.readouterr().out
     assert "th_text (4 prompts)" in out and "total        4 prompts" in out
-    assert "capability_honesty" in out and "not implemented in this version" in out
+    assert "th_integrity, th_knowledge" in out and "not implemented in this version" in out
     assert "provisional" in out
 
 
@@ -870,3 +870,137 @@ def test_a_flag_overriding_the_protocol_is_recorded_as_a_deviation(sandbox):
     assert (sampling["temperature"], sampling["top_p"], sampling["top_k"]) == (0.0, 0.95, 20)
     assert sampling["matches_protocol"] is False
     assert verdict["protocol_deviations"] == ["sampling"] and verdict["admitted"] is False
+
+
+# --- derived cases: en_integrity scores the saved replies of over_refusal and en_text ---
+
+REPLY = "Here is a clear and helpful answer to the question that was asked."
+
+
+def english_sandbox(sandbox, monkeypatch):
+    for case_id in ("en_text", "over_refusal"):
+        prompts = sandbox / f"{case_id}.jsonl"
+        prompts.write_text("".join(json.dumps({"id": f"{case_id}_{i}"}) + "\n" for i in range(4)), encoding="utf-8")
+        monkeypatch.setitem(orchestrator.CASE_RUNNERS, case_id, CaseRunner(prompts, "score_th_text", "classifier"))
+    path = sandbox / "t_en.json"
+    entry = {"threshold": 0.2, "min_scored": 1}
+    path.write_text(json.dumps({"provisional": True, "cases": {
+        "en_text": entry,
+        "over_refusal": entry,
+        "en_integrity": {"threshold": 0, "min_scored": 1, "max_excluded_fraction": 0.10, "line_rule": "any_line", "share_threshold": 0.25},
+    }}))
+    return path
+
+
+class EnglishStages:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd, log_path):
+        self.calls.append(cmd)
+        out = Path(cmd[cmd.index("--out") + 1])
+        if cmd[1] == "model_wrapper.py":
+            out.write_text("".join(json.dumps({"id": f"r{i}", "response": REPLY, "finish_reason": "stop"}) + "\n" for i in range(4)), encoding="utf-8")
+            run_config.write_stage_report(out, stage_report_for(cmd))
+            return 0
+        if cmd[1] == "score_en_integrity.py":
+            import score_en_integrity
+
+            score_en_integrity.main(cmd[2:], identify=lambda line: "en")
+            return 0
+        return fake_stages(cmd, log_path)
+
+    def wrapper_outs(self):
+        return [Path(c[c.index("--out") + 1]).name for c in self.calls if c[1] == "model_wrapper.py"]
+
+
+def english_argv(sandbox, thresholds, *extra, languages=("en",)):
+    return ["run", "--model", "m", "--model-id", "x", "--modalities", "text", "--languages", *languages,
+            "--thresholds", str(thresholds), *extra]
+
+
+def test_english_run_scores_the_saved_replies_without_generating_for_the_derived_case(sandbox, monkeypatch, capsys):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    stages = EnglishStages()
+    verdict = safety_suite.main(english_argv(sandbox, thresholds), run_stage=stages, interactive=False)
+
+    assert verdict["cases_run"] == ["en_text", "over_refusal", "en_integrity"]
+    assert stages.wrapper_outs() == ["responses_en_text.jsonl", "responses_over_refusal.jsonl"]
+    integrity = verdict["case_results"][-1]
+    assert (integrity["status"], integrity["score"], integrity["n_scored"], integrity["n_prompts"]) == ("pass", 1.0, 8, 8)
+    assert integrity["per_language"] == {"en": {"pass": True, "n_samples": 8, "pass_rate": 1.0}}
+    assert verdict["languages_verified"] == {"en": True}
+    assert "capabilities_verified" not in verdict
+    assert verdict["smartness_gate"] == "insufficient_data"  # tool_calling is still unbuilt
+    assert verdict["gate_incomplete"] == {"smartness": ["tool_calling"]}
+    run_dir = next((sandbox / "results").glob("x_*"))
+    assert (run_dir / "scored_en_integrity.jsonl").exists() and (run_dir / "review_en_integrity.csv").exists()
+    # The derived case wrote no stage report, and the verdict still records one configuration.
+    assert not (run_dir / "responses_en_integrity.jsonl.run_config.json").exists()
+    out = capsys.readouterr().out
+    assert "total        8 prompts" in out
+    assert "en_integrity (replies of over_refusal, en_text; no prompts sent)" in out
+    assert set(verdict["run_args"]["provenance"]["prompt_sets"]) == {"en_text", "over_refusal"}
+
+
+def test_only_the_derived_case_is_refused_before_anything_runs(sandbox, monkeypatch):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    with pytest.raises(SystemExit, match="also name over_refusal, en_text"):
+        safety_suite.main(english_argv(sandbox, thresholds, "--only", "en_integrity"),
+                          run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
+    assert not (sandbox / "results").exists()
+
+
+def test_only_naming_the_derived_case_with_its_sources_runs_all_three(sandbox, monkeypatch):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    verdict = safety_suite.main(english_argv(sandbox, thresholds, "--only", "en_text,over_refusal,en_integrity"),
+                                run_stage=EnglishStages(), interactive=False)
+    assert verdict["cases_run"] == ["en_text", "over_refusal", "en_integrity"]
+    assert verdict["run_scope"] == "full"
+
+
+def test_english_and_thai_run_leaves_thai_integrity_unattempted(sandbox, monkeypatch):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_text", orchestrator.CASE_RUNNERS["en_text"])
+    data = json.loads(thresholds.read_text())
+    data["cases"]["th_text"] = {"threshold": 0.2, "min_scored": 1}
+    thresholds.write_text(json.dumps(data))
+    verdict = safety_suite.main(english_argv(sandbox, thresholds, languages=("en", "th")), run_stage=EnglishStages(), interactive=False)
+    assert verdict["languages_verified"] == {"en": True, "th": None}
+    assert verdict["gate_incomplete"] == {"smartness": ["tool_calling", "th_integrity", "th_knowledge"]}
+
+
+def test_api_dry_run_skips_the_derived_case(sandbox, monkeypatch, capsys):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    generation = write_generation(sandbox, x={"en_text": {"max_new_tokens": 4096}, "over_refusal": {"max_new_tokens": 1024}})
+    argv = english_argv(sandbox, thresholds, *API, "--max-thb", "40", "--generation-config", generation, "--dry-run")
+    safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    out = capsys.readouterr().out
+    assert "en_text" in out and "over_refusal" in out and "en_integrity   " not in out
+
+
+def test_resume_with_a_relative_folder_forwards_absolute_paths(sandbox, monkeypatch):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    generation = write_generation(sandbox, x={"en_text": {"max_new_tokens": 4096}, "over_refusal": {"max_new_tokens": 1024}})
+    (sandbox / "results" / "earlier").mkdir(parents=True)
+    monkeypatch.chdir(sandbox)
+    stages = EnglishStages()
+    argv = english_argv(sandbox, thresholds, *API, "--max-thb", "40", "--generation-config", generation,
+                        "--resume", "results/earlier")
+    verdict = safety_suite.main(argv, run_stage=stages, interactive=False)
+    outs = [Path(c[c.index("--out") + 1]) for c in stages.calls]
+    assert outs and all(p.is_absolute() for p in outs)
+    scorer = next(c for c in stages.calls if c[1] == "score_en_integrity.py")
+    assert all(Path(a.split("=", 1)[1]).is_absolute() for a in scorer if a.startswith(("over_refusal=", "en_text=")))
+    assert (sandbox / "results" / "earlier" / "verdict.json").exists() and verdict["cases_run"][-1] == "en_integrity"
+    assert "results/earlier/" in (sandbox / "_index.md").read_text(encoding="utf-8").replace("\\", "/")
+
+
+def test_resume_folder_outside_the_repo_is_allowed(sandbox, monkeypatch, tmp_path_factory):
+    thresholds = english_sandbox(sandbox, monkeypatch)
+    generation = write_generation(sandbox, x={"en_text": {"max_new_tokens": 4096}, "over_refusal": {"max_new_tokens": 1024}})
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    monkeypatch.setattr(safety_suite, "REPO_ROOT", sandbox / "repo")
+    argv = english_argv(sandbox, thresholds, *API, "--max-thb", "40", "--generation-config", generation, "--resume", str(elsewhere))
+    safety_suite.main(argv, run_stage=EnglishStages(), interactive=False)
+    assert str(elsewhere.resolve()) in (sandbox / "_index.md").read_text(encoding="utf-8")

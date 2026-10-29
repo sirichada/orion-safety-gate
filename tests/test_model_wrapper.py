@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,55 @@ def test_a_stopped_run_still_leaves_its_configuration(wrapper, monkeypatch):
         wrapper.run("--out", str(wrapper.out), "--max-consecutive-failures", "1")
     assert run_config.read_stage_report(wrapper.out)["precision"]["mode"] == "4bit"
     assert (wrapper.out.parent / "responses.jsonl.stopped.json").exists()
+
+
+def stop_then_work(wrapper, monkeypatch, out, working_generate):
+    """Stops a run on the consecutive-no-answer rule, then restores a generate() that works."""
+
+    def failing(prompts, *args, **kwargs):
+        raise RuntimeError("out of memory")
+
+    failing.count_truncated = lambda prompts, chat_template=None: 0
+    healthy = model_wrapper.make_generate
+    monkeypatch.setattr(model_wrapper, "make_generate", lambda *a, **k: failing)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)))
+    with pytest.raises(model_wrapper.StoppedNoAnswer):
+        wrapper.run("--out", str(out), "--max-consecutive-failures", "1")
+    assert Path(str(out) + ".stopped.json").exists()
+    monkeypatch.setattr(model_wrapper, "make_generate", healthy)
+
+
+@pytest.mark.parametrize("extra", [["--resume"], []])
+def test_a_later_attempt_removes_the_stale_stopped_sidecar(wrapper, monkeypatch, extra):
+    stop_then_work(wrapper, monkeypatch, wrapper.out, None)
+    wrapper.run("--out", str(wrapper.out), "--max-consecutive-failures", "1", *extra)
+    assert not Path(str(wrapper.out) + ".stopped.json").exists()
+    assert len(read_jsonl(wrapper.out)) == 4
+
+
+def test_a_source_stopped_then_resumed_is_scored_by_the_derived_case(wrapper, monkeypatch, tmp_path):
+    import orchestrator
+    import score_en_integrity
+    from cases import REGISTRY
+
+    out = tmp_path / "responses_over_refusal.jsonl"
+    stop_then_work(wrapper, monkeypatch, out, None)
+    wrapper.run("--out", str(out), "--max-consecutive-failures", "1", "--resume")
+    (tmp_path / "responses_en_text.jsonl").write_text(
+        json.dumps({"id": "e0", "response": "A perfectly ordinary English reply to the prompt.", "finish_reason": "stop"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def stage(cmd, log_path):
+        score_en_integrity.main(cmd[2:], identify=lambda line: "en")
+        return 0
+
+    case = next(c for c in REGISTRY if c.case_id == "en_integrity")
+    thresholds = {"cases": {"en_integrity": {"threshold": 0, "min_scored": 1}}}
+    result = orchestrator.run_derived_case(case, tmp_path, thresholds, run_stage=stage, timestamp="t")
+    # The failed batch is kept on resume as excluded records, so only the en_text reply scores; what matters
+    # here is that the old sidecar no longer blocks scoring.
+    assert result["score"] == 1.0 and result["n_scored"] == 1 and "stopped" not in result["notes"]
 
 
 def test_unloadable_precision_exits_with_the_config_error_code_and_message(wrapper, monkeypatch):

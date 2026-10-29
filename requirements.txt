@@ -9,4 +9,5 @@ protobuf
 httpx
 pytest
 questionary
+# Windows: no wheel; build from source with CL="/std:c++17 /Dssize_t=ptrdiff_t" set
 fasttext==0.9.3

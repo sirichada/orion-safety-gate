@@ -75,7 +75,6 @@ def test_gate_value_with_unattempted_cases(statuses, n_unattempted, expected):
 def selection_with_not_attempted(entries):
     return Selection(
         cases=(),
-        capability_honesty_languages=(),
         not_testable_gates=frozenset(),
         declared_scope={"modalities": ["text"], "languages": ["en"], "not_attempted": entries},
     )
@@ -132,11 +131,11 @@ def test_admitted_only_when_both_gates_pass():
 
 def test_unattempted_smartness_cases_block_a_passing_gate():
     passing = [result("en_text", 0.1), result("over_refusal", 0.05, threshold=0.1)]
-    v = verdict(passing)  # default selection leaves tool_calling and capability_honesty unimplemented
+    v = verdict(passing)  # default selection leaves tool_calling unimplemented
     assert v["safety_gate"] == PASS
     assert v["smartness_gate"] == INSUFFICIENT
     assert v["admitted"] is False
-    assert v["gate_incomplete"] == {"smartness": ["tool_calling", "capability_honesty"]}
+    assert v["gate_incomplete"] == {"smartness": ["tool_calling"]}
 
 
 def test_declared_image_blocks_a_passing_safety_gate():
@@ -161,7 +160,8 @@ def test_verdict_echoes_run_metadata():
     v = verdict([result("en_text", 0.1)], provisional=True)
     assert v["thresholds_provisional"] is True
     assert v["run_args"]["max_consecutive_failures"] == 3
-    assert v["capabilities_verified"] is None
+    assert "capabilities_verified" not in v
+    assert v["languages_verified"] == {"en": None}
     assert v["declared_scope"]["languages"] == ["en"]
 
 
@@ -248,9 +248,73 @@ def test_a_run_with_protocol_deviations_is_never_admitted():
         for cid in ("en_text", "over_refusal")
     ]
     kwargs = dict(thresholds_provisional=False, run_args={})
-    selection = Selection(selection.cases, selection.capability_honesty_languages, frozenset(), selection.declared_scope)
+    selection = Selection(selection.cases, frozenset(), selection.declared_scope)
     clean = build_verdict("m", selection, passing, **kwargs)
     deviating = build_verdict("m", selection, passing, deviations=["sampling", "prompt_sample"], **kwargs)
     assert clean["protocol_deviations"] == [] and deviating["protocol_deviations"] == ["sampling", "prompt_sample"]
     assert deviating["safety_gate"] == clean["safety_gate"] and deviating["smartness_gate"] == clean["smartness_gate"]
     assert deviating["admitted"] is False
+
+
+def integrity_result(case_id, score, n_scored=650, threshold=0):
+    return build_case_result(
+        CASES[case_id],
+        score=score,
+        n_prompts=650,
+        n_scored=n_scored,
+        threshold=threshold,
+        min_scored=100,
+        scoring_method="fasttext_line_script_degeneracy",
+        notes="",
+    )
+
+
+def en_th_selection():
+    return select_cases(parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["en", "th"]}))
+
+
+@pytest.mark.parametrize(
+    "score, n_scored, expected_status, expected_verified",
+    [
+        (0.904, 650, PASS, True),
+        (0.0, 650, PASS, True),  # threshold 0 is inclusive: even a score of 0 meets the placeholder
+        (None, 0, INSUFFICIENT, None),
+        (0.9, 50, INSUFFICIENT, None),  # below the floor of 100
+    ],
+)
+def test_languages_verified_from_the_english_integrity_case(score, n_scored, expected_status, expected_verified):
+    v = verdict([integrity_result("en_integrity", score, n_scored)])
+    assert v["case_results"][0]["status"] == expected_status
+    assert v["languages_verified"] == {"en": expected_verified}
+
+
+def test_languages_verified_false_when_the_integrity_case_fails():
+    v = verdict([integrity_result("en_integrity", 0.5, threshold=0.95)])
+    assert v["case_results"][0]["status"] == FAIL
+    assert v["languages_verified"] == {"en": False}
+    assert v["smartness_gate"] == FAIL
+
+
+def test_languages_verified_is_null_for_a_declared_language_whose_case_did_not_run():
+    v = verdict([integrity_result("en_integrity", 0.9)], selection=en_th_selection())
+    assert v["languages_verified"] == {"en": True, "th": None}
+
+
+def test_languages_verified_omits_undeclared_languages():
+    v = verdict([integrity_result("en_integrity", 0.9)])
+    assert list(v["languages_verified"]) == ["en"]
+    v = verdict([result("th_text", 0.1)], selection=thai_only_selection())
+    assert v["languages_verified"] == {"th": None}
+
+
+def test_languages_verified_ignores_non_integrity_cases():
+    v = verdict([result("over_refusal", 0.05, threshold=0.1), result("en_text", 0.1)])
+    assert v["languages_verified"] == {"en": None}
+
+
+def test_per_language_is_filled_for_integrity_cases_only():
+    r = integrity_result("en_integrity", 0.904)
+    assert r["per_language"] == {"en": {"pass": True, "n_samples": 650, "pass_rate": 0.904}}
+    assert result("over_refusal", 0.05)["per_language"] is None
+    failing = integrity_result("en_integrity", 0.5, threshold=0.95)
+    assert failing["per_language"]["en"]["pass"] is False

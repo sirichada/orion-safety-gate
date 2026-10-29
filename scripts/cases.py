@@ -4,6 +4,9 @@ Case registry and selection: turns a candidate model's declared capabilities
 into the list of cases the suite runs against it, plus the declared_scope
 block recorded in the verdict.
 
+A derived case generates nothing: it scores the saved replies of its source
+cases from the same run, so it runs after them and `only` must name all of them.
+
 A case whose capability was declared but which isn't implemented yet is
 reported in declared_scope["not_attempted"], never silently dropped. A gate
 with no applicable implemented case is reported as not testable, never as
@@ -40,6 +43,9 @@ NO_CASE_REASON = "no implemented {gate} case applies to the declared capabilitie
 
 RUN_SCOPES = ("full", "partial")
 
+# The cases that check a language declaration is true; verdict.languages_verified reads only these.
+INTEGRITY_CASE_IDS = ("en_integrity", "th_integrity")
+
 
 class OnlyError(ValueError):
     """`only` names a case the suite cannot run for this candidate."""
@@ -54,6 +60,12 @@ class CaseSpec:
     modality: str | None
     language: str | None
     implemented: bool
+    # Cases whose saved replies this case scores; empty for a case that generates its own.
+    sources: tuple[str, ...] = ()
+
+    @property
+    def derived(self) -> bool:
+        return bool(self.sources)
 
 
 REGISTRY: tuple[CaseSpec, ...] = (
@@ -63,18 +75,23 @@ REGISTRY: tuple[CaseSpec, ...] = (
     CaseSpec("th_image", "safety", "lower_is_better", "image", "th", False),
     CaseSpec("over_refusal", "smartness", "lower_is_better", None, "en", True),
     CaseSpec("tool_calling", "smartness", "higher_is_better", None, "en", False),
-    # Samples only the declared languages; see Selection.capability_honesty_languages.
-    CaseSpec("capability_honesty", "smartness", "higher_is_better", None, None, False),
+    CaseSpec("en_integrity", "smartness", "higher_is_better", None, "en", True, ("over_refusal", "en_text")),
+    CaseSpec("th_integrity", "smartness", "higher_is_better", None, "th", False, ("th_text",)),
+    CaseSpec("th_knowledge", "smartness", "higher_is_better", None, "th", False),
 )
 
 
 @dataclass(frozen=True)
 class Selection:
     cases: tuple[CaseSpec, ...]
-    capability_honesty_languages: tuple[str, ...]
     not_testable_gates: frozenset[str]
     declared_scope: dict
     run_scope: str = "full"
+
+    @property
+    def generating_cases(self) -> tuple[CaseSpec, ...]:
+        """The cases that send prompts to the candidate; derived cases only score what these saved."""
+        return tuple(case for case in self.cases if not case.derived)
 
 
 def _applies(case: CaseSpec, capabilities: Capabilities) -> bool:
@@ -99,6 +116,12 @@ def _check_only(only: Sequence[str], capabilities: Capabilities) -> None:
             )
         if not case.implemented:
             raise OnlyError(f"--only: {case_id} is registered but {NOT_IMPLEMENTED_REASON}")
+        missing = [source for source in case.sources if source not in only]
+        if missing:
+            raise OnlyError(
+                f"--only: {case_id} scores the saved replies of {', '.join(case.sources)}; "
+                f"also name {', '.join(missing)}"
+            )
 
 
 def select_cases(capabilities: Capabilities, only: Sequence[str] | None = None) -> Selection:
@@ -136,7 +159,6 @@ def select_cases(capabilities: Capabilities, only: Sequence[str] | None = None) 
     partial = any(entry["reason_code"] == REASON_EXCLUDED_BY_ONLY for entry in not_attempted)
     return Selection(
         cases=tuple(cases),
-        capability_honesty_languages=tuple(sorted(capabilities.declared_languages)),
         not_testable_gates=not_testable_gates,
         declared_scope={
             "modalities": sorted(capabilities.declared_modalities),
@@ -157,7 +179,6 @@ def main():
     selection = select_cases(load_capabilities(args.path), only=only)
     print(f"cases: {[case.case_id for case in selection.cases]}")
     print(f"run scope: {selection.run_scope}")
-    print(f"capability_honesty languages: {list(selection.capability_honesty_languages)}")
     print(f"not testable gates: {sorted(selection.not_testable_gates)}")
     print(json.dumps({"declared_scope": selection.declared_scope}, indent=2))
 

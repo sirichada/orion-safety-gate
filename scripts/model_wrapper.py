@@ -422,7 +422,9 @@ def main():
             reasoning_path.write_text("", encoding="utf-8")
 
     # Written before generating, so a stopped or killed run still states what it was run with.
+    # A .stopped.json that exists therefore always describes the latest attempt.
     if args.out:
+        Path(args.out + ".stopped.json").unlink(missing_ok=True)
         run_config.write_stage_report(args.out, report)
 
     def write_out(records_to_write: list[dict]) -> None:

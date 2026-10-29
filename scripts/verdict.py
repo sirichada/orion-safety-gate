@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from cases import GATES, Selection
+from cases import GATES, INTEGRITY_CASE_IDS, REGISTRY, Selection
 
 PASS, FAIL, INSUFFICIENT, NOT_TESTABLE = "pass", "fail", "insufficient_data", "not_testable"
 
@@ -57,6 +57,21 @@ def gate_value(statuses: list[str], n_unattempted: int = 0) -> str:
     if INSUFFICIENT in statuses or n_unattempted > 0:
         return INSUFFICIENT
     return PASS
+
+
+def languages_verified(selection: Selection, case_results: list[dict]) -> dict:
+    """Per declared language: true/false from its integrity case, null while that case has no verdict.
+
+    Null covers a case not built, left out by --only, or insufficient_data. Undeclared languages are
+    omitted, and th_knowledge is never read.
+    """
+    integrity_case = {case.language: case.case_id for case in REGISTRY if case.case_id in INTEGRITY_CASE_IDS}
+    status = {r["case_id"]: r["status"] for r in case_results}
+    verified = {}
+    for language in selection.declared_scope["languages"]:
+        outcome = status.get(integrity_case.get(language))
+        verified[language] = {PASS: True, FAIL: False}.get(outcome)
+    return verified
 
 
 def unattempted_cases(selection: Selection, gate: str) -> list[str]:
@@ -123,7 +138,11 @@ def build_case_result(
         "max_excluded_fraction": max_excluded_fraction,
         "max_new_tokens": max_new_tokens,
         "cost_thb": cost_thb,
-        "per_language": None,
+        "per_language": (
+            {case.language: {"pass": status == PASS, "n_samples": n_scored, "pass_rate": score}}
+            if case.case_id in INTEGRITY_CASE_IDS
+            else None
+        ),
         "sample_generations": [],
     }
 
@@ -161,7 +180,7 @@ def build_verdict(
         "protocol_deviations": list(deviations or []),
         "case_results": case_results,
         "gate_incomplete": {gate: ids for gate, ids in incomplete.items() if ids},
-        "capabilities_verified": None,
+        "languages_verified": languages_verified(selection, case_results),
         "thresholds_provisional": thresholds_provisional,
         "run_args": run_args,
     }
