@@ -1,6 +1,7 @@
 import csv
 import json
 import random
+from pathlib import Path
 
 import pytest
 
@@ -406,7 +407,7 @@ def write_jsonl(path, records):
 def test_parse_responses_arg():
     assert s.parse_responses_arg("over_refusal=/tmp/a.jsonl")[0] == "over_refusal"
     label, path = s.parse_responses_arg("/tmp/responses_en_text.jsonl")
-    assert label == "responses_en_text" and str(path) == "/tmp/responses_en_text.jsonl"
+    assert label == "responses_en_text" and path == Path("/tmp/responses_en_text.jsonl")
 
 
 def test_cli_scores_several_files_and_writes_scores_and_review(tmp_path, capsys):
