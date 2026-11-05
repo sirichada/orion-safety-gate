@@ -54,13 +54,23 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import re
 import string
-import unicodedata
-import zlib
 from collections import Counter
 from pathlib import Path
 from typing import Callable
+
+from integrity_checks import (
+    REASON_EMPTY,
+    REASON_LENGTH,
+    REASON_NGRAM,
+    REASON_SCRIPT,
+    REASON_TAIL,
+    ScriptRule,
+    loop_failure as _loop_failure,
+    script_context as _script_context,
+    script_failure as _script_failure,
+    strip_code_and_urls,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LID_MODEL_PATH = REPO_ROOT / "data" / "lid" / "lid.176.bin"
@@ -89,19 +99,12 @@ TAIL_CHARS = 1000
 TAIL_MIN_BYTES = 600
 TAIL_MAX_ZLIB_RATIO = 0.2
 
-REASON_EMPTY = "empty_answer"
-REASON_LENGTH = "length_cap"
-REASON_SCRIPT = "script_mix"
-REASON_NGRAM = "loop_ngram"
-REASON_TAIL = "loop_tail"
 REASON_LANGUAGE = "language_line"
 
 EXCERPT_CHARS = 200
 EXCERPT_LINES = 2
 
-_FENCE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
-_INLINE_CODE = re.compile(r"`[^`\n]*`")
-_URL = re.compile(r"https?://\S+")
+SCRIPT_RULE = ScriptRule(EXEMPT_SCRIPT_PREFIXES, RUN_SCRIPT_PREFIXES, MIN_SCRIPT_RUN, MAX_NON_LATIN_SHARE)
 
 Identify = Callable[[str], str]
 
@@ -140,47 +143,16 @@ def make_identifier(path: Path = LID_MODEL_PATH) -> Identify:
     return lambda line: predict_language(load_lid_model(path), line)
 
 
-def strip_code_and_urls(text: str) -> str:
-    text = _FENCE.sub("\n", text)
-    text = _INLINE_CODE.sub(" ", text)
-    return _URL.sub(" ", text)
-
-
 def script_failure(text: str) -> bool:
-    letters = non_latin = run = 0
-    for ch in text:
-        if not ch.isalpha():
-            run = 0
-            continue
-        letters += 1
-        name = unicodedata.name(ch, "")
-        if name.startswith(EXEMPT_SCRIPT_PREFIXES):
-            run = 0
-            continue
-        non_latin += 1
-        run = run + 1 if name.startswith(RUN_SCRIPT_PREFIXES) else 0
-        if run >= MIN_SCRIPT_RUN:
-            return True
-    return letters > 0 and non_latin / letters > MAX_NON_LATIN_SHARE
+    return _script_failure(text, SCRIPT_RULE)
 
 
 def script_context(text: str) -> str:
-    for i, ch in enumerate(text):
-        if ch.isalpha() and not unicodedata.name(ch, "").startswith(EXEMPT_SCRIPT_PREFIXES):
-            return text[max(0, i - 60) : i + 60]
-    return text[:EXCERPT_CHARS]
+    return _script_context(text, EXEMPT_SCRIPT_PREFIXES, EXCERPT_CHARS)
 
 
 def loop_failure(text: str) -> str | None:
-    words = text.split()
-    if len(words) >= NGRAM_WORDS:
-        counts = Counter(tuple(words[i : i + NGRAM_WORDS]) for i in range(len(words) - NGRAM_WORDS + 1))
-        if counts.most_common(1)[0][1] >= NGRAM_REPEATS_TO_FAIL:
-            return REASON_NGRAM
-    tail = text[-TAIL_CHARS:].encode("utf-8")
-    if len(tail) >= TAIL_MIN_BYTES and len(zlib.compress(tail)) / len(tail) < TAIL_MAX_ZLIB_RATIO:
-        return REASON_TAIL
-    return None
+    return _loop_failure(text, str.split, NGRAM_WORDS, NGRAM_REPEATS_TO_FAIL, TAIL_CHARS, TAIL_MIN_BYTES, TAIL_MAX_ZLIB_RATIO)
 
 
 _PUNCTUATION = str.maketrans("", "", string.punctuation + "،")
