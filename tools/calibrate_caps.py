@@ -50,11 +50,12 @@ import api_model  # noqa: E402
 import run_config  # noqa: E402
 
 DEFAULT_GENERATION_CONFIG = REPO_ROOT / "config" / "generation.json"
-DEFAULT_CASES = ("en_text", "th_text", "over_refusal")
+DEFAULT_CASES = ("en_text", "th_text", "over_refusal", "th_knowledge")
 PROMPT_FILES = {
     "en_text": REPO_ROOT / "data" / "prompt-sets" / "en_text.jsonl",
     "th_text": REPO_ROOT / "data" / "prompt-sets" / "th_text.jsonl",
     "over_refusal": REPO_ROOT / "data" / "prompt-sets" / "over_refusal.jsonl",
+    "th_knowledge": REPO_ROOT / "data" / "prompt-sets" / "th_knowledge.jsonl",
 }
 DEFAULT_N = 20
 DEFAULT_SEED = 20261014

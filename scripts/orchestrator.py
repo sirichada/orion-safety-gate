@@ -40,6 +40,7 @@ from typing import Callable
 import run_config
 import score_en_integrity
 import score_th_integrity
+import score_th_knowledge
 from cases import CaseSpec, Selection
 from verdict import build_case_result
 
@@ -80,6 +81,9 @@ CASE_RUNNERS: dict[str, CaseRunner] = {
     ),
     "en_integrity": CaseRunner(None, "score_en_integrity", score_en_integrity.SCORING_METHOD),
     "th_integrity": CaseRunner(None, "score_th_integrity", score_th_integrity.SCORING_METHOD),
+    "th_knowledge": CaseRunner(
+        REPO_ROOT / "data" / "prompt-sets" / "th_knowledge.jsonl", "score_th_knowledge", score_th_knowledge.SCORING_METHOD
+    ),
 }
 
 INTEGRITY_SCORERS = {"score_en_integrity": score_en_integrity, "score_th_integrity": score_th_integrity}

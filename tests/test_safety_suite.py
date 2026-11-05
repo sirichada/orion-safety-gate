@@ -115,9 +115,10 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(safety_suite, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(orchestrator, "LOGS", tmp_path / "logs")
     monkeypatch.setattr(run_config, "HUB", FakeHub())
-    # These tests exercise th_text alone, so th_integrity is taken out of selection.
+    # These tests exercise th_text alone, so the other Thai cases are taken out of selection.
     monkeypatch.setattr(
-        cases, "REGISTRY", tuple(dataclasses.replace(c, implemented=False) if c.case_id == "th_integrity" else c for c in cases.REGISTRY)
+        cases, "REGISTRY", tuple(dataclasses.replace(c, implemented=False) if c.case_id in ("th_integrity", "th_knowledge") else c
+            for c in cases.REGISTRY)
     )
     prompts = tmp_path / "th_text.jsonl"
     prompts.write_text("".join(json.dumps({"id": f"thaisafetybench_{i}"}) + "\n" for i in range(4)), encoding="utf-8")

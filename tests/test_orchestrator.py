@@ -559,6 +559,7 @@ def thai_runners(tmp_path, monkeypatch):
     prompts = tmp_path / "th_text.jsonl"
     prompts.write_text(json.dumps({"id": "a"}) + "\n", encoding="utf-8")
     monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_text", CaseRunner(prompts, "score_th_text", "x"))
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_knowledge", CaseRunner(prompts, "score_th_knowledge", "x"))
 
 
 def thai_selection():
@@ -566,7 +567,8 @@ def thai_selection():
 
 
 def thai_thresholds(**integrity):
-    return {"cases": {"th_text": {"threshold": 0.2, "min_scored": 1}, "th_integrity": {**THAI_ENTRY, **integrity}}}
+    plain = {"threshold": 0.2, "min_scored": 1}
+    return {"cases": {"th_text": plain, "th_knowledge": plain, "th_integrity": {**THAI_ENTRY, **integrity}}}
 
 
 def test_preflight_accepts_th_integrity(thai_runners):
@@ -601,3 +603,43 @@ def test_pythainlp_problems_reports_an_uninstalled_package(monkeypatch):
     monkeypatch.setattr(orchestrator.importlib.util, "find_spec", lambda name: None)
     (problem,) = REAL_PYTHAINLP_PROBLEMS()
     assert "pythainlp==5.4.0" in problem
+
+
+# --- th_knowledge: a generating case scored by the letter-match scorer ---
+
+TH_KNOWLEDGE = next(case for case in REGISTRY if case.case_id == "th_knowledge")
+KNOWLEDGE_THRESHOLDS = {"provisional": True, "cases": {"th_knowledge": {"threshold": 0, "min_scored": 1}}}
+
+
+def test_th_knowledge_runner_is_a_generating_case_with_the_letter_match_scorer():
+    runner = orchestrator.CASE_RUNNERS["th_knowledge"]
+    assert runner.prompts.name == "th_knowledge.jsonl" and runner.scorer == "score_th_knowledge"
+    assert runner.scoring_method == "letter_match" and TH_KNOWLEDGE.implemented and not TH_KNOWLEDGE.derived
+
+
+def test_th_knowledge_is_generated_then_scored_by_the_real_scorer(tmp_path, monkeypatch):
+    prompts = tmp_path / "th_knowledge.jsonl"
+    prompts.write_text("".join(json.dumps({"id": f"thai_exam_onet_{i}"}) + "\n" for i in range(4)), encoding="utf-8")
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_knowledge", CaseRunner(prompts, "score_th_knowledge", "letter_match"))
+    replies = ["C", "Answer: B", "no idea", ""]
+
+    def stages(cmd, log_path):
+        out = Path(cmd[cmd.index("--out") + 1])
+        if cmd[1] == "model_wrapper.py":
+            records = [
+                {"id": f"thai_exam_onet_{i}", "native_category": "onet", "answer": "C", "response": reply, "generation_failed": False}
+                for i, reply in enumerate(replies)
+            ]
+            out.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            run_config.write_stage_report(out, stage_report_for(cmd))
+            return 0
+        import score_th_knowledge
+
+        score_th_knowledge.main(cmd[2:])
+        return 0
+
+    result = run_case(TH_KNOWLEDGE, tmp_path, ["--model", "m"], KNOWLEDGE_THRESHOLDS, run_stage=stages, timestamp="t")
+    assert (result["n_prompts"], result["n_scored"], result["score"]) == (4, 4, 0.25)
+    assert result["scoring_method"] == "letter_match" and result["status"] == "pass"
+    assert "2/4 replies unparsable" in result["notes"]
+    assert result["per_language"] is None

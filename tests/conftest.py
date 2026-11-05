@@ -121,7 +121,7 @@ class FakeHub:
 
 
 @pytest.fixture
-def thai_integrity_unbuilt(monkeypatch):
+def thai_smartness_unbuilt(monkeypatch):
     """Leaves the smartness gate with no implemented Thai case, to exercise the not-testable path."""
     import dataclasses
 
@@ -130,7 +130,9 @@ def thai_integrity_unbuilt(monkeypatch):
     monkeypatch.setattr(
         cases,
         "REGISTRY",
-        tuple(dataclasses.replace(c, implemented=False) if c.case_id == "th_integrity" else c for c in cases.REGISTRY),
+        tuple(
+            dataclasses.replace(c, implemented=False) if c.case_id in ("th_integrity", "th_knowledge") else c for c in cases.REGISTRY
+        ),
     )
 
 

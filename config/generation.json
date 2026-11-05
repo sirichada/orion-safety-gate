@@ -1,5 +1,5 @@
 {
-  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. All three models' caps were calibrated on 2026-10-27: each is the smallest step at least twice the longest finished reply, with cut-off prompts re-sent at 32768. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
+  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. All three models' caps were calibrated on 2026-10-27: each is the smallest step at least twice the longest finished reply, with cut-off prompts re-sent at 32768. The th_knowledge caps are placeholders copied from th_text, not calibrated; a reply cut off by its cap scores as wrong. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
   "cases": {
     "en_text": {
       "max_new_tokens": 256,
@@ -12,6 +12,10 @@
     "over_refusal": {
       "max_new_tokens": 256,
       "max_input_tokens": 2048
+    },
+    "th_knowledge": {
+      "max_new_tokens": 256,
+      "max_input_tokens": 4096
     }
   },
   "models": {
@@ -24,6 +28,9 @@
       },
       "over_refusal": {
         "max_new_tokens": 8192
+      },
+      "th_knowledge": {
+        "max_new_tokens": 8192
       }
     },
     "Qwen 3.8-27B": {
@@ -35,6 +42,9 @@
       },
       "over_refusal": {
         "max_new_tokens": 16384
+      },
+      "th_knowledge": {
+        "max_new_tokens": 32768
       }
     },
     "Qwen 3.8-Flash-Next": {
@@ -46,6 +56,9 @@
       },
       "over_refusal": {
         "max_new_tokens": 32768
+      },
+      "th_knowledge": {
+        "max_new_tokens": 65536
       }
     }
   },

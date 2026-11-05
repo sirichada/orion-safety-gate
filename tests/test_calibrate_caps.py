@@ -410,3 +410,8 @@ def test_a_model_with_no_protocol_is_refused_even_on_a_dry_run(prompt_files, cap
 def test_dry_run_shows_the_resolved_sampling(prompt_files, capsys):
     cc.main(["--model", MODEL, "--model-id", "mango", "--dry-run", "--n", "2"])
     assert "sampling: temperature 1, top_p 0.95, top_k 20 (extra_body), presence_penalty 1.5\n" in capsys.readouterr().out
+
+
+def test_th_knowledge_is_calibrated_from_its_own_prompt_set():
+    assert "th_knowledge" in cc.DEFAULT_CASES
+    assert cc.PROMPT_FILES["th_knowledge"].name == "th_knowledge.jsonl"

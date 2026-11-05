@@ -149,7 +149,7 @@ def thai_only_selection():
     return select_cases(parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["th"]}))
 
 
-def test_not_testable_smartness_blocks_admission(thai_integrity_unbuilt):
+def test_not_testable_smartness_blocks_admission(thai_smartness_unbuilt):
     v = verdict([result("th_text", 0.1)], selection=thai_only_selection())
     assert v["safety_gate"] == PASS
     assert v["smartness_gate"] == NOT_TESTABLE
@@ -165,7 +165,7 @@ def test_verdict_echoes_run_metadata():
     assert v["declared_scope"]["languages"] == ["en"]
 
 
-def test_verdict_round_trips_with_null_score_and_not_testable_gate(thai_integrity_unbuilt):
+def test_verdict_round_trips_with_null_score_and_not_testable_gate(thai_smartness_unbuilt):
     v = verdict([result("th_text", None, n_scored=0)], selection=thai_only_selection())
     assert v["safety_gate"] == INSUFFICIENT
     assert v["smartness_gate"] == NOT_TESTABLE
@@ -199,7 +199,7 @@ def test_partial_run_still_reports_a_failing_case_as_fail():
     assert v["admitted"] is False
 
 
-def test_partial_run_of_a_gate_with_no_applicable_case_stays_not_testable(thai_integrity_unbuilt):
+def test_partial_run_of_a_gate_with_no_applicable_case_stays_not_testable(thai_smartness_unbuilt):
     selection = partial_selection(["th_text"], languages=("th",))
     v = verdict([result("th_text", 0.1)], selection=selection)
     assert v["smartness_gate"] == NOT_TESTABLE
