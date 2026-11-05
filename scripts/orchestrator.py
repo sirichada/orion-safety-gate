@@ -39,6 +39,7 @@ from typing import Callable
 
 import run_config
 import score_en_integrity
+import score_th_integrity
 from cases import CaseSpec, Selection
 from verdict import build_case_result
 
@@ -78,6 +79,18 @@ CASE_RUNNERS: dict[str, CaseRunner] = {
         REPO_ROOT / "data" / "prompt-sets" / "over_refusal.jsonl", "score_over_refusal", "string_match"
     ),
     "en_integrity": CaseRunner(None, "score_en_integrity", score_en_integrity.SCORING_METHOD),
+    "th_integrity": CaseRunner(None, "score_th_integrity", score_th_integrity.SCORING_METHOD),
+}
+
+INTEGRITY_SCORERS = {"score_en_integrity": score_en_integrity, "score_th_integrity": score_th_integrity}
+
+# Per-scorer config keys beyond line_rule and share_threshold, each with its CLI flag and default.
+EXTRA_INTEGRITY_SETTINGS = {
+    "score_th_integrity": (
+        ("min_thai_ratio", "--min-thai-ratio", score_th_integrity.DEFAULT_MIN_THAI_RATIO),
+        ("min_line_letters", "--min-line-letters", score_th_integrity.DEFAULT_MIN_LINE_LETTERS),
+        ("foreign_letter_share", "--foreign-letter-share", score_th_integrity.DEFAULT_FOREIGN_LETTER_SHARE),
+    ),
 }
 
 RunStage = Callable[[list[str], Path], int]
@@ -131,14 +144,33 @@ def lid_problems() -> list[str]:
     return problems
 
 
-def integrity_config_problems(case_id: str, entry: dict) -> list[str]:
+def pythainlp_problems() -> list[str]:
+    """What stops score_th_integrity from running in this interpreter, which also runs the scorer subprocess."""
+    if importlib.util.find_spec("pythainlp") is None:
+        return [f"pythainlp is not importable from {sys.executable}; install pythainlp==5.4.0 into this interpreter"]
+    return []
+
+
+def _is_number(value) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def integrity_config_problems(case_id: str, entry: dict, scorer: str = "score_en_integrity") -> list[str]:
+    module = INTEGRITY_SCORERS[scorer]
     problems = []
-    line_rule = entry.get("line_rule", score_en_integrity.DEFAULT_LINE_RULE)
-    if line_rule not in score_en_integrity.LINE_RULES:
-        problems.append(f"{case_id}: line_rule must be one of {score_en_integrity.LINE_RULES}, got {line_rule!r}")
-    share = entry.get("share_threshold", score_en_integrity.DEFAULT_SHARE_THRESHOLD)
-    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share <= 1:
+    line_rule = entry.get("line_rule", module.DEFAULT_LINE_RULE)
+    if line_rule not in module.LINE_RULES:
+        problems.append(f"{case_id}: line_rule must be one of {module.LINE_RULES}, got {line_rule!r}")
+    share = entry.get("share_threshold", module.DEFAULT_SHARE_THRESHOLD)
+    if not _is_number(share) or not 0 < share <= 1:
         problems.append(f"{case_id}: share_threshold must be a number in (0, 1], got {share!r}")
+    for key, _flag, default in EXTRA_INTEGRITY_SETTINGS.get(scorer, ()):
+        value = entry.get(key, default)
+        if key == "min_line_letters":
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                problems.append(f"{case_id}: {key} must be an integer of at least 1, got {value!r}")
+        elif not _is_number(value) or not 0 < value <= 1:
+            problems.append(f"{case_id}: {key} must be a number in (0, 1], got {value!r}")
     return problems
 
 
@@ -159,10 +191,12 @@ def preflight(selection: Selection, thresholds: dict) -> None:
         entry = thresholds.get("cases", {}).get(case.case_id)
         if entry is None or "threshold" not in entry or "min_scored" not in entry:
             problems.append(f"{case.case_id}: thresholds config needs 'threshold' and 'min_scored'")
-        elif runner is not None and runner.scorer == "score_en_integrity":
-            problems.extend(integrity_config_problems(case.case_id, entry))
+        elif runner is not None and runner.scorer in INTEGRITY_SCORERS:
+            problems.extend(integrity_config_problems(case.case_id, entry, runner.scorer))
         if runner is not None and runner.scorer == "score_en_integrity":
             problems.extend(f"{case.case_id}: {problem}" for problem in lid_problems())
+        if runner is not None and runner.scorer == "score_th_integrity":
+            problems.extend(f"{case.case_id}: {problem}" for problem in pythainlp_problems())
     if problems:
         raise SuiteError("Preflight failed:\n  " + "\n  ".join(problems))
 
@@ -296,8 +330,12 @@ def run_derived_case(
     source_paths = {source: responses_file(Path(run_dir), source).resolve() for source in case.sources}
     scored = Path(run_dir).resolve() / f"scored_{case.case_id}.jsonl"
     review = Path(run_dir).resolve() / f"review_{case.case_id}.csv"
-    line_rule = entry.get("line_rule", score_en_integrity.DEFAULT_LINE_RULE)
-    share_threshold = entry.get("share_threshold", score_en_integrity.DEFAULT_SHARE_THRESHOLD)
+    module = INTEGRITY_SCORERS[runner.scorer]
+    line_rule = entry.get("line_rule", module.DEFAULT_LINE_RULE)
+    share_threshold = entry.get("share_threshold", module.DEFAULT_SHARE_THRESHOLD)
+    extra_settings = [
+        (key, flag, entry.get(key, default)) for key, flag, default in EXTRA_INTEGRITY_SETTINGS.get(runner.scorer, ())
+    ]
 
     existing = {source: path for source, path in source_paths.items() if path.exists()}
     n_prompts = sum(count_lines(path) for path in existing.values())
@@ -337,6 +375,7 @@ def run_derived_case(
         line_rule,
         "--share-threshold",
         str(share_threshold),
+        *(arg for _key, flag, value in extra_settings for arg in (flag, str(value))),
     ]
     code = run_stage(cmd, LOGS / f"{runner.scorer}_{case.case_id}_{stamp}.log")
     if code != 0:
@@ -351,7 +390,10 @@ def run_derived_case(
     notes = "; ".join(
         part
         for part in (
-            f"line_rule={line_rule}, share_threshold={share_threshold}",
+            ", ".join(
+                [f"line_rule={line_rule}", f"share_threshold={share_threshold}"]
+                + [f"{key}={value}" for key, _flag, value in extra_settings]
+            ),
             f"scored the saved replies of {hashes}",
             summary.get("notes", ""),
         )

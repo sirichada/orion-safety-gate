@@ -8,7 +8,7 @@ import pytest
 import orchestrator
 import run_config
 from capabilities import parse_capabilities
-from conftest import REAL_LID_PROBLEMS, stage_report_for
+from conftest import REAL_LID_PROBLEMS, REAL_PYTHAINLP_PROBLEMS, stage_report_for
 from cases import REGISTRY, OnlyError, select_cases
 from orchestrator import (
     ABORTED_EXIT_CODE,
@@ -476,3 +476,128 @@ def test_lid_problems_are_empty_when_both_are_present(monkeypatch, tmp_path):
 def test_a_derived_case_never_goes_through_the_generation_path(replies, monkeypatch):
     monkeypatch.setattr(orchestrator, "responses_path", lambda *a: pytest.fail("derived cases write no responses"))
     run_case(EN_INTEGRITY, replies, [], INTEGRITY_THRESHOLDS, run_stage=IntegrityStages(), timestamp="t")
+
+
+# --- th_integrity: the same derived-case path with the Thai scorer ---
+
+TH_INTEGRITY = next(case for case in REGISTRY if case.case_id == "th_integrity")
+THAI_REPLY = "ผู้ใช้งานที่ได้รับอนุญาตสามารถเข้าถึงระบบได้"
+THAI_ENTRY = {
+    "threshold": 0,
+    "min_scored": 1,
+    "line_rule": "any_line",
+    "share_threshold": 0.25,
+    "min_thai_ratio": 0.5,
+    "min_line_letters": 5,
+    "foreign_letter_share": 0.01,
+}
+THAI_THRESHOLDS = {"provisional": True, "cases": {"th_integrity": THAI_ENTRY}}
+
+
+class ThaiIntegrityStages:
+    """Runs the real Thai scorer in-process with a whitespace tokenizer, so the command line is parsed for real."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd, log_path):
+        self.calls.append(cmd)
+        import score_th_integrity
+
+        score_th_integrity.main(cmd[2:], tokenize=str.split)
+        return 0
+
+
+@pytest.fixture
+def thai_replies(tmp_path):
+    write_replies(tmp_path, "th_text", [ok(THAI_REPLY), ok(THAI_REPLY + "\nThis line is written entirely in English words"), ok("")])
+    return tmp_path
+
+
+def test_th_integrity_runner_is_a_derived_case_with_the_thai_scorer():
+    runner = orchestrator.CASE_RUNNERS["th_integrity"]
+    assert runner.prompts is None and runner.scorer == "score_th_integrity"
+    assert TH_INTEGRITY.implemented and TH_INTEGRITY.sources == ("th_text",)
+
+
+def test_th_integrity_scores_the_saved_th_text_replies(thai_replies):
+    stages = ThaiIntegrityStages()
+    result = run_case(TH_INTEGRITY, thai_replies, [], THAI_THRESHOLDS, run_stage=stages, timestamp="t")
+
+    cmd = stages.calls[0]
+    assert cmd[1] == "score_th_integrity.py"
+    assert cmd[cmd.index("--responses") + 1 : cmd.index("--out")] == [f"th_text={thai_replies / 'responses_th_text.jsonl'}"]
+    for flag, value in (("--min-thai-ratio", "0.5"), ("--min-line-letters", "5"), ("--foreign-letter-share", "0.01")):
+        assert cmd[cmd.index(flag) + 1] == value
+    assert (thai_replies / "scored_th_integrity.jsonl").exists() and (thai_replies / "review_th_integrity.csv").exists()
+    assert (result["n_prompts"], result["n_scored"]) == (3, 3)
+    assert result["score"] == pytest.approx(1 / 3)
+    assert result["scoring_method"] == "thai_char_ratio_script_degeneracy"
+    assert result["status"] == "pass"  # the placeholder threshold 0 is met by any score
+    assert result["per_language"] == {"th": {"pass": True, "n_samples": 3, "pass_rate": pytest.approx(1 / 3)}}
+    assert "min_thai_ratio=0.5" in result["notes"] and "pythainlp" in result["notes"]
+
+
+def test_th_integrity_settings_come_from_the_config(thai_replies):
+    config = {"cases": {"th_integrity": {**THAI_ENTRY, "line_rule": "share_of_lines", "share_threshold": 0.5, "min_thai_ratio": 0.3}}}
+    stages = ThaiIntegrityStages()
+    run_case(TH_INTEGRITY, thai_replies, [], config, run_stage=stages, timestamp="t")
+    cmd = stages.calls[0]
+    assert cmd[cmd.index("--line-rule") + 1] == "share_of_lines" and cmd[cmd.index("--min-thai-ratio") + 1] == "0.3"
+
+
+def test_th_integrity_defaults_apply_when_the_config_omits_the_extra_keys(thai_replies):
+    config = {"cases": {"th_integrity": {"threshold": 0, "min_scored": 1}}}
+    stages = ThaiIntegrityStages()
+    run_case(TH_INTEGRITY, thai_replies, [], config, run_stage=stages, timestamp="t")
+    cmd = stages.calls[0]
+    assert cmd[cmd.index("--min-line-letters") + 1] == "5" and cmd[cmd.index("--foreign-letter-share") + 1] == "0.01"
+
+
+@pytest.fixture
+def thai_runners(tmp_path, monkeypatch):
+    prompts = tmp_path / "th_text.jsonl"
+    prompts.write_text(json.dumps({"id": "a"}) + "\n", encoding="utf-8")
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_text", CaseRunner(prompts, "score_th_text", "x"))
+
+
+def thai_selection():
+    return select_cases(parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["th"]}))
+
+
+def thai_thresholds(**integrity):
+    return {"cases": {"th_text": {"threshold": 0.2, "min_scored": 1}, "th_integrity": {**THAI_ENTRY, **integrity}}}
+
+
+def test_preflight_accepts_th_integrity(thai_runners):
+    preflight(thai_selection(), thai_thresholds())
+
+
+@pytest.mark.parametrize(
+    "integrity, message",
+    [
+        ({"line_rule": "most_lines"}, "line_rule must be one of"),
+        ({"share_threshold": 0}, "share_threshold must be a number in"),
+        ({"min_thai_ratio": 0}, "min_thai_ratio must be a number in"),
+        ({"min_thai_ratio": 1.5}, "min_thai_ratio must be a number in"),
+        ({"foreign_letter_share": True}, "foreign_letter_share must be a number in"),
+        ({"min_line_letters": 0}, "min_line_letters must be an integer of at least 1"),
+        ({"min_line_letters": 2.5}, "min_line_letters must be an integer of at least 1"),
+        ({"min_line_letters": True}, "min_line_letters must be an integer of at least 1"),
+    ],
+)
+def test_preflight_rejects_a_bad_th_integrity_config(thai_runners, integrity, message):
+    with pytest.raises(SuiteError, match=message):
+        preflight(thai_selection(), thai_thresholds(**integrity))
+
+
+def test_preflight_names_a_missing_pythainlp(thai_runners, monkeypatch):
+    monkeypatch.setattr(orchestrator, "pythainlp_problems", lambda: ["pythainlp is not importable"])
+    with pytest.raises(SuiteError, match="th_integrity: pythainlp is not importable"):
+        preflight(thai_selection(), thai_thresholds())
+
+
+def test_pythainlp_problems_reports_an_uninstalled_package(monkeypatch):
+    monkeypatch.setattr(orchestrator.importlib.util, "find_spec", lambda name: None)
+    (problem,) = REAL_PYTHAINLP_PROBLEMS()
+    assert "pythainlp==5.4.0" in problem

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import orchestrator  # noqa: E402
 
 REAL_LID_PROBLEMS = orchestrator.lid_problems
+REAL_PYTHAINLP_PROBLEMS = orchestrator.pythainlp_problems
 
 
 @pytest.fixture(autouse=True)
@@ -117,3 +118,23 @@ class FakeHub:
 
     def cached_commit(self, repo_id, revision=None):
         return self.cached
+
+
+@pytest.fixture
+def thai_integrity_unbuilt(monkeypatch):
+    """Leaves the smartness gate with no implemented Thai case, to exercise the not-testable path."""
+    import dataclasses
+
+    import cases
+
+    monkeypatch.setattr(
+        cases,
+        "REGISTRY",
+        tuple(dataclasses.replace(c, implemented=False) if c.case_id == "th_integrity" else c for c in cases.REGISTRY),
+    )
+
+
+@pytest.fixture(autouse=True)
+def pythainlp_available(monkeypatch):
+    """Tests run without PyThaiNLP being required; the real check has its own tests."""
+    monkeypatch.setattr(orchestrator, "pythainlp_problems", lambda: [])

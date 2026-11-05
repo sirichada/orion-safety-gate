@@ -26,7 +26,7 @@ def excluded(case_id, gate):
 
 # Smartness cases registered but not built. tool_calling is English-only, like over_refusal, so a
 # Thai-only declaration doesn't see it.
-SMARTNESS_NOT_ATTEMPTED_TH = [unimplemented(c, "smartness") for c in ("th_integrity", "th_knowledge")]
+SMARTNESS_NOT_ATTEMPTED_TH = [unimplemented("th_knowledge", "smartness")]
 SMARTNESS_NOT_ATTEMPTED_EN = [unimplemented("tool_calling", "smartness")]
 SMARTNESS_NOT_ATTEMPTED_EN_TH = [*SMARTNESS_NOT_ATTEMPTED_EN, *SMARTNESS_NOT_ATTEMPTED_TH]
 
@@ -61,8 +61,16 @@ def test_text_english_only():
 
 def test_text_thai_only():
     selection = select(["text"], ["th"])
+    assert case_ids(selection) == ["th_text", "th_integrity"]
+    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED_TH
+    assert selection.not_testable_gates == frozenset()
+
+
+def test_thai_only_with_no_built_smartness_case_is_not_testable(thai_integrity_unbuilt):
+    selection = select(["text"], ["th"])
     assert case_ids(selection) == ["th_text"]
     assert selection.declared_scope["not_attempted"] == [
+        unimplemented("th_integrity", "smartness"),
         *SMARTNESS_NOT_ATTEMPTED_TH,
         {
             "case_id": None,
@@ -88,14 +96,14 @@ def test_english_declaration_selects_over_refusal():
 
 def test_text_english_and_thai():
     selection = select(["text"], ["th", "en"])
-    assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity"]
+    assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity", "th_integrity"]
     assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED_EN_TH
     assert selection.not_testable_gates == frozenset()
 
 
 def test_declared_image_is_reported_not_attempted():
     selection = select(["text", "image"], ["en", "th"])
-    assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity"]
+    assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity", "th_integrity"]
     assert selection.declared_scope["not_attempted"] == [
         unimplemented("en_image", "safety"),
         unimplemented("th_image", "safety"),
@@ -203,16 +211,16 @@ def test_only_excluding_a_whole_gate_does_not_make_it_untestable():
     assert excluded("over_refusal", "smartness") in selection.declared_scope["not_attempted"]
 
 
-def test_only_keeps_not_testable_for_a_gate_nothing_applies_to():
+def test_only_keeps_not_testable_for_a_gate_nothing_applies_to(thai_integrity_unbuilt):
     selection = select_only(["th_text"], languages=("th",))
     assert selection.not_testable_gates == frozenset({"smartness"})
     assert len(gate_level_entries(selection, "smartness")) == 1
 
 
 def test_only_naming_every_applicable_built_case_is_a_full_run():
-    selection = select_only(["en_text", "th_text", "over_refusal", "en_integrity"])
+    selection = select_only(["en_text", "th_text", "over_refusal", "en_integrity", "th_integrity"])
     assert selection.run_scope == "full"
-    assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity"]
+    assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity", "th_integrity"]
     assert all(e["reason_code"] != "excluded_by_only" for e in selection.declared_scope["not_attempted"])
 
 
@@ -230,7 +238,7 @@ def test_only_case_not_applicable_to_the_declaration_is_an_error():
         select_only(["th_text"], languages=("en",))
 
 
-@pytest.mark.parametrize("case_id", ["en_image", "tool_calling", "th_integrity", "th_knowledge"])
+@pytest.mark.parametrize("case_id", ["en_image", "tool_calling", "th_knowledge"])
 def test_only_unbuilt_case_is_an_error(case_id):
     with pytest.raises(OnlyError, match="not implemented"):
         select_only([case_id], modalities=("text", "image"))
@@ -283,6 +291,17 @@ def test_only_sources_without_the_derived_case_leaves_it_excluded():
     assert excluded("en_integrity", "smartness") in selection.declared_scope["not_attempted"]
 
 
-def test_only_unbuilt_derived_case_reports_unimplemented_before_missing_sources():
+def test_only_unbuilt_derived_case_reports_unimplemented_before_missing_sources(thai_integrity_unbuilt):
     with pytest.raises(OnlyError, match="not implemented"):
         select_only(["th_integrity"])
+
+
+def test_only_thai_derived_case_alone_is_an_error_naming_its_source():
+    with pytest.raises(OnlyError, match="also name th_text"):
+        select_only(["th_integrity"])
+
+
+def test_only_thai_derived_case_with_its_source_runs_in_registry_order():
+    selection = select_only(["th_integrity", "th_text"], languages=("th",))
+    assert case_ids(selection) == ["th_text", "th_integrity"]
+    assert selection.run_scope == "full"

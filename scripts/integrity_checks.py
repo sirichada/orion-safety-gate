@@ -7,11 +7,13 @@ Importing this module imports no language-ID or tokenizer package.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import zlib
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 REASON_EMPTY = "empty_answer"
@@ -95,3 +97,35 @@ def loop_failure(
     if tail_failure(text, tail_chars, tail_min_bytes, tail_max_ratio):
         return REASON_TAIL
     return None
+
+
+def is_excluded(record: dict) -> bool:
+    return bool(record.get("generation_failed")) and not record.get("no_answer")
+
+
+def pass_rate(records: list[dict], key: str | None = None) -> float | None:
+    if not records:
+        return None
+    if key is None:
+        return sum(r["label"] for r in records) / len(records)
+    return sum(1 for r in records if not r[key]) / len(records)
+
+
+def parse_responses_arg(value: str) -> tuple[str, Path]:
+    """`label=path`, or a bare path labelled by its file stem."""
+    if "=" in value:
+        label, path = value.split("=", 1)
+        return label, Path(path)
+    return Path(value).stem, Path(value)
+
+
+def load_records(specs: list[str]) -> list[dict]:
+    records = []
+    for spec in specs:
+        label, path = parse_responses_arg(spec)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                record["source"] = label
+                records.append(record)
+    return records

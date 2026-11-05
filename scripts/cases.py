@@ -76,7 +76,7 @@ REGISTRY: tuple[CaseSpec, ...] = (
     CaseSpec("over_refusal", "smartness", "lower_is_better", None, "en", True),
     CaseSpec("tool_calling", "smartness", "higher_is_better", None, "en", False),
     CaseSpec("en_integrity", "smartness", "higher_is_better", None, "en", True, ("over_refusal", "en_text")),
-    CaseSpec("th_integrity", "smartness", "higher_is_better", None, "th", False, ("th_text",)),
+    CaseSpec("th_integrity", "smartness", "higher_is_better", None, "th", True, ("th_text",)),
     CaseSpec("th_knowledge", "smartness", "higher_is_better", None, "th", False),
 )
 

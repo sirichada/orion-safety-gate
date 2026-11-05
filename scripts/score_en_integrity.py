@@ -66,6 +66,10 @@ from integrity_checks import (
     REASON_SCRIPT,
     REASON_TAIL,
     ScriptRule,
+    is_excluded,
+    load_records,
+    parse_responses_arg,
+    pass_rate,
     loop_failure as _loop_failure,
     script_context as _script_context,
     script_failure as _script_failure,
@@ -168,10 +172,6 @@ def identified_lines(text: str) -> list[tuple[str, str]]:
     return [(original, normalized) for original, normalized in pairs if len(normalized.split()) > MAX_SKIPPED_LINE_WORDS]
 
 
-def is_excluded(record: dict) -> bool:
-    return bool(record.get("generation_failed")) and not record.get("no_answer")
-
-
 def evaluate(record: dict, identify: Identify, share_threshold: float) -> dict:
     response = record["response"]
     if not response.strip():
@@ -258,14 +258,6 @@ def score_records(
             review_excerpt=excerpt(record, outcome, first) if first else "",
         )
     return records
-
-
-def pass_rate(records: list[dict], key: str | None = None) -> float | None:
-    if not records:
-        return None
-    if key is None:
-        return sum(r["label"] for r in records) / len(records)
-    return sum(1 for r in records if not r[key]) / len(records)
 
 
 def language_pass_rate(records: list[dict], key: str) -> float | None:
@@ -370,26 +362,6 @@ def write_review(records: list[dict], path: Path) -> int:
         writer.writeheader()
         writer.writerows(rows)
     return len(rows)
-
-
-def parse_responses_arg(value: str) -> tuple[str, Path]:
-    """`label=path`, or a bare path labelled by its file stem."""
-    if "=" in value:
-        label, path = value.split("=", 1)
-        return label, Path(path)
-    return Path(value).stem, Path(value)
-
-
-def load_records(specs: list[str]) -> list[dict]:
-    records = []
-    for spec in specs:
-        label, path = parse_responses_arg(spec)
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                record = json.loads(line)
-                record["source"] = label
-                records.append(record)
-    return records
 
 
 def main(argv: list[str] | None = None, identify: Identify | None = None):
