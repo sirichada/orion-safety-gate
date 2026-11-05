@@ -32,6 +32,46 @@ done
 echo "Fetched XSTest prompts -> data/over-refusal/xstest_prompts.csv"
 echo "Fetched XSTest completions + string-match labels -> data/over-refusal/{completions,streval}/"
 
+# ThaiExam (Apache-2.0, typhoon-ai/thai_exam v1.0), pinned to a revision and per-file sha256. Feeds the th_knowledge case.
+THAI_EXAM_REV="d78aef04ea3cc5095545e6951cb39e17c64e26a1"
+THAI_EXAM_DIR="data/th-knowledge"
+THAI_EXAM_FILES="
+a_level_test:284b6e504e08a7f454fef85e2428624ee2835acdcc086981cd18757f98e5b1d5
+a_level_train:bdd9388b4fc5a89bf714f733e09327ebd80e9c3a7d9210877ae5b91cb3bfecd9
+ic_test:211bc6f5e63578b34f5fcfc5191b925f16a5842408504ac2d865f38d06b71359
+ic_train:7cdb5e6204012c8bd6e85cb0f5a559d9cc523089f6310e0c870c94e4bbcabbc4
+onet_test:9e43f86192caec19a78c316688eb607dcdaae3dbd85fc3de0f67176f4c89fc65
+onet_train:58dc4bc5d23ce2de94aebc7bb5b4c18b54ff2e8f349ccbc000634e6a03686403
+tgat_test:1f4f48a7756abb57d7685c102a26f58d83f7e65cc9e8267585bc723c50105e9f
+tgat_train:a276d4efd5209085724c22be9cba880bc254e7149f4184a5db373ca2a3ec3c31
+tpat1_test:27bc3276b53360537ded2b6113a3fae532102836231e3b4e9da0c84bd7effc8e
+tpat1_train:2b6a90f1c7585c6bada5919a4015624e6697aca65f33fc18a85732b714b7c172
+"
+
+file_hash() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+mkdir -p "${THAI_EXAM_DIR}"
+for entry in ${THAI_EXAM_FILES}; do
+  name="${entry%%:*}"
+  want="${entry##*:}"
+  exam="${name%_*}"
+  dest="${THAI_EXAM_DIR}/${name}.jsonl"
+  curl -sfL -o "${dest}" \
+    "https://huggingface.co/datasets/typhoon-ai/thai_exam/resolve/${THAI_EXAM_REV}/data/${exam}/${name}.jsonl"
+  got="$(file_hash "${dest}")"
+  if [ "${got}" != "${want}" ]; then
+    echo "ERROR: ${dest} sha256 mismatch: expected ${want}, got ${got}" >&2
+    exit 1
+  fi
+done
+echo "Fetched ThaiExam (revision ${THAI_EXAM_REV}) -> ${THAI_EXAM_DIR}/"
+
 # fastText language-ID model for the en_integrity scorer (lid.176.bin, CC-BY-SA 3.0 per the fastText language-identification page).
 # While LID_SHA256 is TODO the file is fetched once and its hash printed. Only this step then exits non-zero,
 # after everything above has been fetched.
