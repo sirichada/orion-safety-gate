@@ -22,7 +22,7 @@ DST = REPO_ROOT / "data" / "prompt-sets" / "th_knowledge.jsonl"
 
 EXAMS = ("onet", "ic", "tgat", "tpat1", "a_level")
 OPTION_KEYS = "abcde"
-INSTRUCTION = "Choose the correct option for each multiple-choice question. Reply with only the letter of the correct option."
+INSTRUCTION = "The examples below are already answered and show the format. Answer only the last question: reply with only the letter of the correct option."
 
 
 def read_rows(path: Path) -> list[dict]:
