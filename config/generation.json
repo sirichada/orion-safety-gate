@@ -1,5 +1,5 @@
 {
-  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. All three models' caps were calibrated on 2026-10-27: each is the smallest step at least twice the longest finished reply, with cut-off prompts re-sent at 32768. The th_knowledge caps are placeholders copied from th_text, not calibrated; a reply cut off by its cap scores as wrong. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
+  "note": "Generation caps per case, and per model overrides under models[<--model-id>][<case_id>]. hf runs fall back to the case defaults below; api runs have no fallback and refuse a (model, case) with no entry. Since 2026-11-07 every api model has the same cap, 32768, on every case: a single test budget rather than a per-model calibration, so a new model needs no calibration run. A reply cut off by the cap is scored by its case's rule (wrong in th_knowledge, excluded as no_answer in the other cases). The longest finished replies measured before the change were 24129 (th_knowledge), 16969 (over_refusal) and 11430 (en_text); th_text on the Qwen models had not been measured above 8192. The gateway bills a request to its cap even when the client closes the stream early. protocols[<--model-id>] is the sampling an api run uses when no sampling flag is given (vendor thinking-mode settings; top_k is sent in extra_body); an api run for a model with no entry is refused, and hf runs are greedy.",
   "cases": {
     "en_text": {
       "max_new_tokens": 256,
@@ -21,16 +21,16 @@
   "models": {
     "Mango 1.5-9B": {
       "en_text": {
-        "max_new_tokens": 16384
+        "max_new_tokens": 32768
       },
       "th_text": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 32768
       },
       "over_refusal": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 32768
       },
       "th_knowledge": {
-        "max_new_tokens": 8192
+        "max_new_tokens": 32768
       }
     },
     "Qwen 3.8-27B": {
@@ -41,7 +41,7 @@
         "max_new_tokens": 32768
       },
       "over_refusal": {
-        "max_new_tokens": 16384
+        "max_new_tokens": 32768
       },
       "th_knowledge": {
         "max_new_tokens": 32768
@@ -49,16 +49,16 @@
     },
     "Qwen 3.8-Flash-Next": {
       "en_text": {
-        "max_new_tokens": 16384
+        "max_new_tokens": 32768
       },
       "th_text": {
-        "max_new_tokens": 65536
+        "max_new_tokens": 32768
       },
       "over_refusal": {
         "max_new_tokens": 32768
       },
       "th_knowledge": {
-        "max_new_tokens": 65536
+        "max_new_tokens": 32768
       }
     }
   },
