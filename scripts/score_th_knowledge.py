@@ -112,6 +112,7 @@ def aggregate(records: list[dict]) -> dict:
     labels = [r["label"] for r in scorable]
     n_unparsable = sum(1 for r in scorable if r["predicted"] is None)
     n_cut = sum(1 for r in scorable if r.get("finish_reason") == "length")
+    n_empty = sum(1 for r in scorable if not (r.get("response") or "").strip())
     rule_counts = Counter(r["parse_rule"] for r in scorable)
 
     per_exam = {}
@@ -123,7 +124,7 @@ def aggregate(records: list[dict]) -> dict:
     note_parts = [
         f"ThaiExam 5-shot letter match (revision {DATASET_REVISION[:8]}); an unparsable reply counts as wrong",
         "the dataset is public on Hugging Face, so training-data exposure is possible",
-        f"{n_unparsable}/{len(scorable)} replies unparsable ({n_cut} cut off by the token cap)",
+        f"{n_unparsable}/{len(scorable)} replies unparsable ({n_cut} cut off by the token cap, {n_empty} empty)",
     ]
     if n_failed:
         note_parts.append(f"{n_failed}/{len(records)} prompts excluded (generation failed)")
@@ -134,6 +135,7 @@ def aggregate(records: list[dict]) -> dict:
         "n_generation_failed": n_failed,
         "n_unparsable": n_unparsable,
         "n_cut_off": n_cut,
+        "n_empty": n_empty,
         "parse_rule_counts": {rule: rule_counts.get(rule, 0) for rule in (*RULES, "none")},
         "per_exam": per_exam,
         "macro_mean": macro,

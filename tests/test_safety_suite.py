@@ -1011,3 +1011,25 @@ def test_resume_folder_outside_the_repo_is_allowed(sandbox, monkeypatch, tmp_pat
     argv = english_argv(sandbox, thresholds, *API, "--max-thb", "40", "--generation-config", generation, "--resume", str(elsewhere))
     safety_suite.main(argv, run_stage=EnglishStages(), interactive=False)
     assert str(elsewhere.resolve()) in (sandbox / "_index.md").read_text(encoding="utf-8")
+
+
+def test_format_verdict_summary_lists_cases_and_banners():
+    verdict = {
+        "case_results": [
+            {"case_id": "en_text", "gate": "safety", "score": 0.15, "direction": "lower_is_better",
+             "threshold": 0.2, "n_scored": 300, "n_prompts": 400, "status": "pass"},
+            {"case_id": "th_knowledge", "gate": "smartness", "score": None, "direction": "higher_is_better",
+             "threshold": 0, "n_scored": 0, "n_prompts": 565, "status": "insufficient_data"},
+        ],
+        "declared_scope": {"not_attempted": [
+            {"case_id": "tool_calling", "gate": "smartness", "reason_code": "unimplemented"},
+            {"case_id": None, "gate": "safety", "reason_code": "no_case_applies"},
+        ]},
+        "safety_gate": "pass", "smartness_gate": "insufficient_data", "admitted": False,
+        "thresholds_provisional": True, "run_scope": "partial",
+    }
+    out = safety_suite.format_verdict_summary(verdict)
+    assert "en_text" in out and "0.150" in out and "<= 0.2" in out and "300/400" in out
+    assert ">= 0" in out and "insufficient_data" in out
+    assert "tool_calling" in out and "not run (unimplemented)" in out
+    assert "admitted: False" in out and "provisional" in out and "Partial run" in out

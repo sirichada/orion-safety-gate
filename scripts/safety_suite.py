@@ -652,9 +652,35 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         scope += "; non-protocol: " + "+".join(verdict["protocol_deviations"])
     folder = run_dir.relative_to(REPO_ROOT) if run_dir.is_relative_to(REPO_ROOT) else run_dir
     append_index_row(stamp, inputs.model_id, f"cases: {cases}{scope}", outcome, f"{folder}/, {out}")
+    print(format_verdict_summary(verdict))
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
     return verdict
+
+
+def format_verdict_summary(verdict: dict) -> str:
+    """A per-case table of a finished verdict for the terminal; verdict.json stays authoritative."""
+    rows = [("case", "gate", "score", "pass mark", "scored", "status")]
+    for r in verdict["case_results"]:
+        score = "-" if r.get("score") is None else f"{r['score']:.3f}"
+        mark = "-"
+        if r.get("threshold") is not None:
+            mark = ("<= " if r.get("direction") == "lower_is_better" else ">= ") + f"{r['threshold']:g}"
+        scored = f"{r.get('n_scored', '-')}/{r.get('n_prompts', '-')}"
+        rows.append((r["case_id"], r["gate"], score, mark, scored, r["status"]))
+    for entry in (verdict.get("declared_scope") or {}).get("not_attempted", []):
+        if entry.get("case_id"):
+            rows.append((entry["case_id"], entry.get("gate", "-"), "-", "-", "-", f"not run ({entry.get('reason_code', '?')})"))
+    widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
+    lines = ["  ".join(str(cell).ljust(w) for cell, w in zip(row, widths)).rstrip() for row in rows]
+    lines.append(
+        f"safety gate: {verdict['safety_gate']}   smartness gate: {verdict['smartness_gate']}   admitted: {verdict['admitted']}"
+    )
+    if verdict.get("thresholds_provisional"):
+        lines.append("Thresholds are provisional placeholders: this verdict is not an admission decision.")
+    if verdict.get("run_scope") == "partial":
+        lines.append("Partial run: not an admission verdict.")
+    return "\n".join(lines)
 
 
 def read_spent(ledger: Path | None) -> float | None:

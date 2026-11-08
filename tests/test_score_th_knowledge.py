@@ -149,3 +149,14 @@ def test_cli_writes_scores_and_prints_the_aggregate(tmp_path, capsys):
     scored = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert [r["label"] for r in scored] == [1, 0]
     assert '"macro_mean"' in capsys.readouterr().out
+
+
+def test_aggregate_counts_empty_replies():
+    recs = [
+        {"id": "a", "native_category": "onet", "answer": "A", "response": "A", "finish_reason": "stop"},
+        {"id": "b", "native_category": "onet", "answer": "B", "response": "  ", "finish_reason": "stop"},
+        {"id": "c", "native_category": "onet", "answer": "C", "response": "", "finish_reason": "length"},
+    ]
+    result = aggregate(score_records(recs))
+    assert result["n_empty"] == 2 and result["n_cut_off"] == 1 and result["n_unparsable"] == 2
+    assert "2 empty" in result["notes"]
