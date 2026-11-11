@@ -81,6 +81,9 @@ MAX_PROMPT_TOKENS = 2048
 # Generation is clipped before formatting into the classifier prompt, so a long
 # response can't push the Rules block / "Answer: [/INST]" off the end.
 MAX_GENERATION_TOKENS = 512
+# One prompt per generate() call: no padding, and the 4-bit 13B classifier peaks under 10 GB, so it
+# fits a 12 GB card. Larger batches spill past it into shared system memory.
+DEFAULT_BATCH_SIZE = 1
 
 
 def clip_generation(tokenizer, text: str) -> str:
@@ -120,7 +123,7 @@ def mark(record: dict, label: int | None, exclusion_reason: str | None, scoring_
 
 
 def score_records(
-    records: list[dict], use_4bit: bool = True, batch_size: int = 8, sort_by_length: bool = False
+    records: list[dict], use_4bit: bool = True, batch_size: int = DEFAULT_BATCH_SIZE, sort_by_length: bool = False
 ) -> list[dict]:
     for record in records:
         if "response" not in record:
@@ -225,7 +228,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--responses", required=True, help="JSONL with prompt-set records + a 'response' field")
     parser.add_argument("--no-4bit", action="store_true", help="Disable 4-bit quantization")
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument(
         "--sort-by-length", action="store_true", help="Sort prompts by tokenized length before batching"
     )
