@@ -160,3 +160,51 @@ def test_aggregate_counts_empty_replies():
     result = aggregate(score_records(recs))
     assert result["n_empty"] == 2 and result["n_cut_off"] == 1 and result["n_unparsable"] == 2
     assert "2 empty" in result["notes"]
+
+
+@pytest.mark.parametrize(
+    "reply, letter",
+    [
+        ("ประโยชน์ต่อสุขภาพทั่วไป ดังนั้น ข้อ B จึงเป็นข้อที่ไม่สามารถอนุมานไดจากข้อความ", "B"),
+        ("ถือเป็นการใช้ภาษาที่ไม่ถูกต้องตามหลักไวยากรณ์ในทางที่กว้างๆ\n\nดังนั้น คำตอบที่ถูกต้องที่สุดคือ ข้อ B", "B"),
+        ("\n\n\\boxed{A}", "A"),
+        ("\n\n\\boxed{B}", "B"),
+        ("Therefore, it is the factor not used in the valuation process.\n\n<|answer|>D</|answer|>", "D"),
+        ("\n\nข้อ D", "D"),
+        ("ผลรวมส่งกลับมาได้ร้อยละ 32 ซึ่งใกล้เคียงกับ 30% มากที่สุดในตัวเลือก จึงตอบ E. 30", "E"),
+        ("คำตอบสุดท้ายคือ ข้อ C", "C"),
+        ("ตอบ A", "A"),
+    ],
+)
+def test_boxed_tagged_and_thai_markers_are_read(reply, letter):
+    assert extract_letter(reply) == (letter, "marker")
+
+
+@pytest.mark.parametrize(
+    "reply, letter",
+    [
+        ("ข้อ A ไม่ถูกต้อง เพราะเหตุผลหนึ่ง\n\\boxed{C}", "C"),
+        ("\\boxed{C} แต่เมื่อพิจารณาอีกครั้ง ข้อ A", "A"),
+        ("I first said A. then <|answer|>B</|answer|>", "B"),
+        ("The answer is A.\nข้อ D", "D"),
+    ],
+)
+def test_the_last_explicit_marker_wins_not_the_first_letter(reply, letter):
+    assert extract_letter(reply)[0] == letter
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "",
+        "\\boxed{8}",
+        "**คำตอบ:** \\(\\boxed{8}\\) (ไม่ตรงกับตัวเลือกที่ให้มา)",
+        "\\boxed{a}",
+        "ข้อ a",
+        "ตอบ ก",
+        "ข้อความนี้ตอบคำถามเกี่ยวกับ A และ B",
+        "จงหาเดิมนครชมีเงินน้อยกว่าคิมหันท์กี่บาท\nA. 295\nB. 285\nC. 250\nD. 210\nE. 195\nAnswer:",
+    ],
+)
+def test_boxed_tagged_and_thai_forms_do_not_fire_on_ordinary_text_or_a_non_letter(reply):
+    assert extract_letter(reply) == (None, "none")

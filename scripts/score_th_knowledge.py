@@ -8,8 +8,10 @@ aggregate with per-exam rates and their macro mean.
 The reply's letter is taken by the first rule that fires, on the reply content only:
 - bare: the whole reply is one letter A-E, ignoring emphasis marks, brackets, a leading
   "Answer:" or "คำตอบ" label and trailing punctuation.
-- marker: the last "answer is" / "answer:" / "คำตอบคือ" style marker in the final 300
-  characters followed by a letter A-E. A lowercase letter counts only when no word follows it.
+- marker: the last explicit answer marker in the final 300 characters followed by a letter A-E:
+  "answer is" / "answer:" / "คำตอบ(ที่ถูกต้อง|สุดท้าย)(ที่สุด)คือ (ข้อ)", "ข้อ X", "ตอบ X",
+  a LaTeX boxed{X} and "<|answer|>X</|answer|>". A lowercase letter counts only after an English
+  marker and only when no word follows it; the Thai and boxed/tagged forms take capitals only.
 - last_line: the last non-empty line is a lone letter ("C", "**C**", "(C)", "C.", "C)"), or an
   option echo ("C. 12.5") when it is the only option-formatted line in the reply.
 A letter elsewhere in the text is never taken. A reply no rule fires on is unparsable, and an
@@ -45,8 +47,18 @@ _CLOSE = r"[\s*_`)\]\"'“”.,;:!]*"
 _LABEL = r"(?:(?:final\s+answer|correct\s+answer|answer|คำตอบ(?:ที่ถูกต้อง|สุดท้าย)?)\s*(?:is|:|=|คือ)?\s*)?"
 _BARE = re.compile(rf"{_WRAP}{_LABEL}{_WRAP}([A-Ea-e]){_CLOSE}", re.IGNORECASE)
 _MARKER = re.compile(
-    r"(?:final\s+answer|correct\s+answer|answer|คำตอบ(?:ที่ถูกต้อง|สุดท้าย)?)\s*(?:is|:|=|คือ)\s*[\s*_`(\[\"'“”]*([A-Ea-e])(?![A-Za-z0-9])",
+    r"(?:final\s+answer|correct\s+answer|answer|คำตอบ(?:ที่ถูกต้อง|สุดท้าย)?(?:ที่สุด)?)\s*(?:is|:|=|คือ)\s*(?:ข้อ\s*)?[\s*_`(\[\"'“”]*([A-Ea-e])(?![A-Za-z0-9])",
     re.IGNORECASE,
+)
+# Capital letters only: a lowercase letter after these is a variable or ordinary text.
+_EXPLICIT_UPPER = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\\boxed\{\s*([A-E])\s*\}",
+        r"<\|answer\|>\s*([A-E])\s*</\|answer\|>",
+        r"ข้อ\s*([A-E])(?![A-Za-z0-9])",
+        r"ตอบ\s*([A-E])(?![A-Za-z0-9])",
+    )
 )
 _LONE_LETTER = re.compile(r"[\s*_`(\[]*([A-Ea-e])[\s*_`)\].]*")
 _OPTION_LINE_UPPER = re.compile(r"[\s*_`(\[]*([A-E])[.)]\s+\S")
@@ -63,14 +75,16 @@ def extract_letter(reply: str) -> tuple[str | None, str]:
         return m.group(1).upper(), "bare"
 
     tail = text[-MARKER_WINDOW_CHARS:]
-    found = None
+    hits = []
     for m in _MARKER.finditer(tail):
         letter = m.group(1)
         if letter.islower() and re.match(r"\s*[A-Za-z]", tail[m.end():]):
             continue
-        found = letter.upper()
-    if found:
-        return found, "marker"
+        hits.append((m.start(1), letter.upper()))
+    for pattern in _EXPLICIT_UPPER:
+        hits.extend((m.start(1), m.group(1)) for m in pattern.finditer(tail))
+    if hits:
+        return max(hits)[1], "marker"
 
     lines = [line for line in text.splitlines() if line.strip()]
     last = lines[-1]
