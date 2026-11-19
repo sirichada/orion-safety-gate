@@ -50,6 +50,8 @@ from orchestrator import (
     run_case,
     run_subprocess,
 )
+import report
+import review
 from verdict import build_verdict
 
 RESULTS = REPO_ROOT / "runs" / "results"
@@ -94,6 +96,17 @@ def build_parser() -> argparse.ArgumentParser:
         "needs the scorers' dependencies (a GPU for the en_text/th_text classifiers). Scored files go to rescore-<timestamp>/ in the run folder",
     )
     rescore.add_argument("--force", action="store_true", help="Let --out replace an existing file")
+    report_p = sub.add_parser("report", help="Write the HTML admission report for a run folder's verdict")
+    report_p.add_argument("run_dir", help="A run folder under runs/results/")
+    report_p.add_argument(
+        "--verdict",
+        default="verdict.json",
+        help="Verdict file in the run folder (default: verdict.json); the report is named after it and never replaces an existing one",
+    )
+    review_p = sub.add_parser("review", help="Apply a reviewer's decision on a needs_review case; re-runs nothing")
+    review_p.add_argument("run_dir", help="A run folder under runs/results/")
+    review_p.add_argument("--review", required=True, help="The review.json the reviewer downloaded from the report")
+    review_p.add_argument("--verdict", default="verdict.json", help="Verdict file in the run folder to review (default: verdict.json)")
     run = sub.add_parser("run", help="Run the suite against one candidate model")
     run.add_argument("--model", required=True, help="Base model path/HF repo id, or the API model id with --backend api")
     run.add_argument("--model-id", default=None, help="Stable declared name/version recorded in the verdict")
@@ -179,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
 def parse_args(argv: list[str] | None = None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "rescore":
+    if args.command in ("rescore", "report", "review"):
         return args
     if args.max_consecutive_failures < 1:
         parser.error("--max-consecutive-failures must be >= 1")
@@ -676,7 +689,32 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     print(format_verdict_summary(verdict))
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Verdict -> {out}")
+    write_report_for(out)
     return verdict
+
+
+def display_folder(run_dir: Path) -> str:
+    """The run folder as the review command should name it: repo-relative with forward slashes when under the repo."""
+    path = Path(run_dir).resolve()
+    return (path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path).as_posix()
+
+
+def report_thresholds() -> dict | None:
+    try:
+        return json.loads((REPO_ROOT / "config" / "thresholds.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def write_report_for(verdict_path: Path) -> Path | None:
+    """Writes the report next to a verdict; a failure here is reported but never undoes the verdict."""
+    try:
+        out = report.write_report(verdict_path, run_folder=display_folder(Path(verdict_path).parent), thresholds=report_thresholds())
+    except SuiteError as e:
+        print(f"Report not written: {e}")
+        return None
+    print(f"Report -> {out}")
+    return out
 
 
 def format_verdict_summary(verdict: dict) -> str:
@@ -720,6 +758,32 @@ def rescore_command(args, run_stage: RunStage = run_subprocess) -> dict:
     print(rescore.format_changes(verdict))
     print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
     print(f"Re-scored verdict -> {out}")
+    write_report_for(out)
+    return verdict
+
+
+def report_command(args) -> Path:
+    run_dir = Path(args.run_dir)
+    verdict_path = run_dir / args.verdict
+    if not verdict_path.is_file():
+        raise SystemExit(f"Report failed: {verdict_path} not found")
+    try:
+        out = report.write_report(verdict_path, run_folder=display_folder(run_dir), thresholds=report_thresholds())
+    except SuiteError as e:
+        raise SystemExit(f"Report failed: {e}")
+    print(f"Report -> {out}")
+    return out
+
+
+def review_command(args) -> dict:
+    try:
+        verdict, out = review.apply_review(Path(args.run_dir), Path(args.review), verdict_name=args.verdict)
+    except SuiteError as e:
+        raise SystemExit(str(e))
+    print(format_verdict_summary(verdict))
+    print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']} state={verdict['verdict_state']}")
+    print(f"Reviewed verdict -> {out}")
+    write_report_for(out)
     return verdict
 
 
@@ -820,6 +884,10 @@ def main(argv: list[str] | None = None, run_stage: RunStage = run_subprocess, in
     args = parse_args(argv)
     if args.command == "rescore":
         return rescore_command(args, run_stage)
+    if args.command == "report":
+        return report_command(args)
+    if args.command == "review":
+        return review_command(args)
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.no_input
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

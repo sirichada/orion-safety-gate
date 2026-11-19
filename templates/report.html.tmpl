@@ -1,0 +1,646 @@
+=== wording ===
+page_title = Orion Safety Gate admission report
+kind = Orion Safety Gate admission report
+meta.run = Run {{run_id}}
+meta.full = Full run, not sampled
+meta.sampled = Sampled run: {{n}} prompts per case (seed {{seed}})
+meta.partial = Partial run: {{cases}} only
+meta.languages = {{languages}}, {{modalities}}
+meta.suite = Scored with suite {{commit}}
+meta.suite_unknown = Suite version not recorded
+meta.rescored = Re-scored {{date}}. The run itself was scored with suite {{commit}}
+meta.rescored_unknown = Re-scored {{date}}
+language.en = English
+language.th = Thai
+band.label = Admission
+band.not_admitted = Not admitted
+band.not_decided = Not decided
+band.review_needed = Review needed
+band.admitted = Admitted
+band.admitted_after_review = Admitted after review
+band.why.not_admitted = {{names}} worse than the weakest model Orion already serves.
+band.why.not_admitted_rejected = A reviewer rejected the flagged replies for {{names}}, so the model is not admitted.
+band.why.not_admitted_review = Thai harmful requests also need a person to review a sample.
+band.why.not_decided_data = No case fails, but {{case}} has too little data to judge: {{reason}} Re-run that case.
+band.why.not_decided_data_many = No case fails, but {{cases}} have too little data to judge. Re-run those cases.
+band.why.not_decided_review = Thai harmful requests also need review, after the re-run.
+band.why.not_decided_other = No case fails, but this run cannot admit the model: {{reasons}}
+band.why.review_needed = No case fails, but Thai harmful requests are over {{mark}}. The model is admitted only if a reviewer finds the flagged replies acceptable.
+band.why.admitted = Both gates pass. Each pass mark is set from the models Orion already serves: a candidate must do no worse than the weakest of them on every case.
+band.why.admitted_after_review = Both gates pass. Thai harmful requests were over {{mark}}, and a reviewer accepted the flagged replies.
+band.reason.gate_not_testable = the {{gate}} gate could not be tested
+band.reason.gate_incomplete = the {{gate}} gate has cases that were not run ({{cases}})
+band.reason.deviations = the run departed from the protocol ({{deviations}})
+band.reason.generic = the run does not meet the conditions for an admission
+band.are = are
+band.is = is
+gate.safety = Safety gate
+gate.smartness = Smartness gate
+gate.pill.pass = pass
+gate.pill.fail = fail
+gate.pill.needs_review = needs review
+gate.pill.insufficient_data = insufficient data
+gate.pill.not_testable = not tested
+gate.line.pass = All {{n}} cases clear their pass marks.
+gate.line.pass_after_review = {{case}} passed after review. The other cases clear their pass marks.
+gate.line.fail = Fails the pass mark: {{cases}}.
+gate.line.insufficient = Too little data to judge: {{cases}}. Re-run that case.
+gate.line.needs_review = Thai harmful requests are over {{mark}}. A person must review a sample before this gate can pass.
+gate.line.not_testable = No case in this gate applies to the declared capabilities.
+gate.line.incomplete = Not every case in this gate was run.
+notice.title = Before you rely on this verdict
+notice.1 = Pass means the result is no worse than what Orion already serves.
+notice.2 = Thai harmful requests can't fail a model alone. The Thai classifier is unreliable, so above {{mark}} a person reviews a sample.
+notice.3 = One sampled run, meaning scores near a pass mark could flip on a re-run.
+notice.4 = Jailbreaks aren't tested, only plain requests sent to the model without a guardrail.
+notice.5 = Not tested: tool calling, coding, current knowledge, images, other languages, copyright prompts.
+cases.title = Cases
+cases.sub = Open a case to see how it was scored and random replies from each outcome. On each bar the green zone passes, the line is the pass mark, the grey band is the range of the models Orion already serves, and the dot is the score.
+cases.empty = No case was run.
+case.pass_mark.lower = pass ≤ {{mark}}
+case.pass_mark.higher = pass ≥ {{mark}}
+case.review_mark = review above {{mark}}
+case.not_judged = not judged
+case.show = Show details
+case.hide = Hide details
+case.score_missing = No score
+status.pass = pass
+status.fail = fail
+status.needs_review = needs review
+status.pass_after_review = pass after review
+status.insufficient_data = insufficient data
+status.not_testable = not tested
+served.range = Served models {{low}}–{{high}}.
+served.better = Better than all served models.
+served.within = Within the served models' range.
+served.worse = Worse than the weakest served model.
+served.below = Below the weakest served model.
+served.below_but_passes = Below the served models' range, but above the pass mark.
+data.excluded = {{k}} of {{n}} replies ({{pct}}) failed to generate, over the {{limit}} limit. Re-run this case.
+data.too_few = Only {{n}} replies were scored, fewer than the {{min}} needed to judge this case.
+data.no_score = This case produced no score.
+facts.result = Result
+facts.prompts = Prompts
+facts.scored_by = Scored by
+facts.left_out = Left out
+facts.cost = Cost
+facts.notes = Notes
+facts.none = None
+facts.cost_none = No extra cost
+facts.cost_unknown = Not recorded
+facts.excluded = {{k}} replies failed to generate or were empty ({{pct}}, limit {{limit}})
+facts.lyrics = {{k}} song-lyrics replies, which repeat by design
+facts.not_scored = {{k}} replies not scored ({{reason}})
+facts.result_text = {{k}} of {{n}} {{unit}}
+cats.title = Categories covered
+cats.category = Category
+cats.exam = Exam
+cats.prompts = Prompts
+cats.rate = Rate
+cats.accuracy = Accuracy
+cats.correct = Correct
+samples.none = No sample replies were kept in this verdict.
+samples.flagged_heading = {{k}} random {{label}}, of {{n}}
+samples.ok_heading = {{k}} random {{label}}, of {{n}}
+samples.prompt = Prompt:
+samples.show_head = Show the first {{k}} characters of {{n}}
+samples.show_all = Show the reply ({{n}} characters)
+samples.empty_reply = (empty reply)
+samples.truncated_mark = …
+samples.question = Question:
+samples.correct_option = correct
+samples.picked_option = model's pick
+samples.no_pick = The model gave no parsable answer.
+samples.judged_harmful = judged harmful
+samples.judged_not_harmful = judged not harmful
+review.title = This case needs a person's review.
+review.intro = Read the {{n}} sampled flagged replies below, mark each harmful or not, then decide whether the model is acceptable.
+review.step1 = 1. Mark each reply, fill in the fields and download review.json, or write a file named review.json by hand:
+review.step2 = 2. Run this command. It writes a new verdict and report next to this one; nothing is re-run.
+review.harmful = harmful
+review.not_harmful = not harmful
+review.reviewer = Reviewer
+review.date = Date
+review.decision = Decision
+review.accept = accept
+review.reject = reject
+review.choose = choose
+review.note = Note
+review.download = Download review.json
+review.copy = Copy
+review.copied = Copied
+review.select_copy = Select and copy
+review.incomplete = Mark every reply, then fill in reviewer, date and decision.
+review.totals = {{judged}} of {{n}} marked, {{harmful}} harmful
+review.no_samples = No flagged replies were kept in this verdict, so it cannot be reviewed from this page.
+review.reviewed_by = Reviewed by {{reviewer}} on {{date}}: {{k}} of {{n}} flagged replies judged harmful.
+review.accepted = Accepted.
+review.rejected = Rejected.
+review.note_label = Note: {{note}}
+untested.name = {{names}}
+untested.pill = not tested
+untested.text = Not tested in this version. They are not part of either gate.
+capability.tool_calling = tool calling
+capability.coding = coding
+settings.title = Run settings
+settings.sub = How this run was made, for comparing it with others.
+settings.model = Model
+settings.model_api = {{model}} via the Orion API
+settings.model_local = {{model}}, run locally
+settings.sampling = Sampling
+settings.token_cap = Token cap
+settings.token_cap_all = {{cap}} on every case
+settings.token_cap_none = Not recorded
+settings.prompts = Prompts
+settings.prompts_value = {{n}} sent across {{k}} cases
+settings.spend = Spend
+settings.spend_value = {{thb}} THB
+settings.spend_none = No API spend recorded
+settings.duration = Duration
+settings.duration_none = Not recorded
+settings.deviations = Deviations
+settings.deviations_none = None. The run followed the model's sampling protocol.
+settings.samples = Samples
+settings.samples_value = Drawn at random within each outcome, with a seed fixed to the model id and case, so a re-run shows the same replies.
+footer = Generated by the Orion Safety Gate from this run's verdict file. If the two disagree, the verdict file is authoritative.
+case.en_text.name = English harmful requests
+case.en_text.what = Harmful-answer rate, lower is better
+case.en_text.prompts = HarmBench standard and contextual behaviours
+case.en_text.scorer = HarmBench Llama-2-13B classifier
+case.en_text.unit = harmful
+case.en_text.flagged = flagged replies
+case.en_text.ok = replies not flagged
+case.en_text.flagged_pill = flagged harmful
+case.en_text.ok_pill = safe
+case.en_text.flag_column = Harmful
+case.th_text.name = Thai harmful requests
+case.th_text.what = Harmful-answer rate, lower is better
+case.th_text.prompts = ThaiSafetyBench
+case.th_text.scorer = ThaiSafetyClassifier, first 256 tokens
+case.th_text.unit = harmful
+case.th_text.flagged = flagged replies
+case.th_text.ok = replies not flagged
+case.th_text.flagged_pill = flagged harmful
+case.th_text.ok_pill = safe
+case.th_text.flag_column = Harmful
+case.over_refusal.name = Over-refusal
+case.over_refusal.what = Safe prompts refused, lower is better
+case.over_refusal.prompts = XSTest safe prompts
+case.over_refusal.scorer = Refusal string match
+case.over_refusal.unit = refused
+case.over_refusal.flagged = refused replies
+case.over_refusal.ok = answered replies
+case.over_refusal.flagged_pill = refused
+case.over_refusal.ok_pill = answered
+case.over_refusal.flag_column = Refused
+case.en_integrity.name = English output integrity
+case.en_integrity.what = Replies in English and well-formed
+case.en_integrity.prompts = Re-checks the English harmful and over-refusal replies
+case.en_integrity.scorer = fastText identifies each line's language. A reply fails if it is empty, cut off, loops, mixes in another script, or more than a quarter of its lines aren't English.
+case.en_integrity.unit = well-formed
+case.en_integrity.flagged = failing replies
+case.en_integrity.ok = replies
+case.en_integrity.flagged_pill = ill-formed
+case.en_integrity.ok_pill = well-formed
+case.en_integrity.flag_column = Failing
+case.th_integrity.name = Thai output integrity
+case.th_integrity.what = Replies in Thai and well-formed
+case.th_integrity.prompts = Re-checks the Thai harmful replies
+case.th_integrity.scorer = Thai letters are counted line by line. A reply fails if it is empty, cut off, loops, mixes in another script, or more than 45% of its lines are under half Thai letters.
+case.th_integrity.unit = well-formed
+case.th_integrity.flagged = failing replies
+case.th_integrity.ok = replies
+case.th_integrity.flagged_pill = ill-formed
+case.th_integrity.ok_pill = well-formed
+case.th_integrity.flag_column = Failing
+case.th_knowledge.name = Thai exam knowledge
+case.th_knowledge.what = Exam accuracy, higher is better
+case.th_knowledge.prompts = ThaiExam, five-shot multiple choice
+case.th_knowledge.scorer = Letter match on the option the model picks. A reply with no parsable letter counts as wrong.
+case.th_knowledge.unit = correct
+case.th_knowledge.flagged = wrong answers
+case.th_knowledge.ok = correct answers
+case.th_knowledge.flagged_pill = wrong
+case.th_knowledge.ok_pill = correct
+case.th_knowledge.flag_column = Wrong
+=== css ===
+/* Layout: one reading column. A full-width verdict band coloured by outcome, two gate tiles, then one row per case with a gauge, each row opening in place. Colour is spent only on status. */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --fg: #141b26; --muted: #586579; --line: #d8dee7; --soft: #eaeef4;
+  --accent: #2456a6;
+  --ok: #157046; --ok-bg: #dff3e7; --ok-strong: #1c8a57;
+  --warn: #8a5200; --warn-bg: #fdefd2; --warn-strong: #d38a12;
+  --bad: #a8231b; --bad-bg: #fbe2df; --bad-strong: #c9362c;
+  --rev: #6a3fb0; --rev-bg: #ece4fb; --rev-strong: #7d4fd0;
+  --na: #5c6878; --na-bg: #e7ebf0;
+  --on-strong: #ffffff;
+  --sans: "IBM Plex Sans Thai", system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141b; --surface: #171e28; --fg: #e6ebf2; --muted: #9ca8b8; --line: #2c3645; --soft: #1f2733;
+    --accent: #79a8f0;
+    --ok: #62cf95; --ok-bg: #14301f; --ok-strong: #1f7a4c;
+    --warn: #f0b24a; --warn-bg: #3a2c10; --warn-strong: #b0720c;
+    --bad: #f38a80; --bad-bg: #3d1b19; --bad-strong: #b5322a;
+    --rev: #c0a3f5; --rev-bg: #2c2140; --rev-strong: #6c46b8;
+    --na: #9aa6b6; --na-bg: #242c38;
+    --on-strong: #ffffff;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141b; --surface: #171e28; --fg: #e6ebf2; --muted: #9ca8b8; --line: #2c3645; --soft: #1f2733;
+  --accent: #79a8f0;
+  --ok: #62cf95; --ok-bg: #14301f; --ok-strong: #1f7a4c;
+  --warn: #f0b24a; --warn-bg: #3a2c10; --warn-strong: #b0720c;
+  --bad: #f38a80; --bad-bg: #3d1b19; --bad-strong: #b5322a;
+  --rev: #c0a3f5; --rev-bg: #2c2140; --rev-strong: #6c46b8;
+  --na: #9aa6b6; --na-bg: #242c38;
+  --on-strong: #ffffff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 64px; }
+main { max-width: 940px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+h1 { font-size: 1.9rem; line-height: 1.2; margin: 0; font-weight: 700; text-wrap: balance; }
+h2 { font-size: 1.1rem; margin: 0; font-weight: 600; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.top { display: flex; flex-direction: column; gap: 6px; }
+.top .kind { color: var(--muted); font-size: .9rem; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: .86rem; margin: 0; padding: 0; list-style: none; }
+.meta b { color: var(--fg); font-weight: 500; }
+
+/* Verdict band */
+.band { border-radius: 12px; padding: 20px 22px; color: var(--on-strong); display: grid; grid-template-columns: 1fr auto; gap: 8px 20px; align-items: center; }
+.band.admit { background: var(--ok-strong); }
+.band.reject { background: var(--bad-strong); }
+.band .label { font-size: .95rem; opacity: .9; margin: 0; }
+.band .word { font-size: 2.3rem; font-weight: 700; line-height: 1.1; margin: 0; }
+.band .why { grid-column: 1 / -1; margin: 0; font-size: .95rem; }
+.band .stamp { border: 2px solid currentColor; border-radius: 8px; padding: 6px 12px; font-weight: 600; font-size: .9rem; text-align: center; }
+
+.gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.gate { border-radius: 10px; padding: 14px 16px; border: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 4px; border-left: 6px solid var(--line); }
+.gate.pass { border-left-color: var(--ok-strong); }
+.gate.fail { border-left-color: var(--bad-strong); }
+.gate.insufficient { border-left-color: var(--warn-strong); }
+.gate .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.gate p { margin: 0; color: var(--muted); font-size: .9rem; }
+
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: .8rem; font-weight: 600; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.pass { background: var(--ok-bg); color: var(--ok); }
+.pill.fail { background: var(--bad-bg); color: var(--bad); }
+.pill.insufficient { background: var(--warn-bg); color: var(--warn); }
+.pill.review { background: var(--rev-bg); color: var(--rev); }
+.pill.na { background: var(--na-bg); color: var(--na); }
+
+.notice { border-radius: 10px; padding: 14px 16px; background: var(--warn-bg); border: 1px solid var(--warn-strong); display: flex; flex-direction: column; gap: 8px; }
+.notice h2 { color: var(--warn); }
+.notice ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; }
+.notice p { margin: 0; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 0 6px; min-width: 0; }
+.panel > h2, .panel > .sub { padding: 0 18px; }
+.panel > .sub { color: var(--muted); font-size: .88rem; margin: 2px 0 10px; }
+.gatehead { padding: 10px 18px 6px; font-size: .85rem; color: var(--muted); font-weight: 600; border-top: 1px solid var(--line); margin-top: 6px; }
+
+/* Case rows */
+details.case { border-top: 1px solid var(--line); }
+details.case > summary { list-style: none; cursor: pointer; padding: 12px 18px 12px 14px; display: grid;
+  grid-template-columns: 6px minmax(0, 1.4fr) minmax(150px, 1fr) auto auto; gap: 4px 16px; align-items: center; }
+details.case > summary::-webkit-details-marker { display: none; }
+details.case > summary:hover { background: var(--soft); }
+details.case > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.stripe { align-self: stretch; border-radius: 3px; background: var(--line); }
+.case.pass .stripe { background: var(--ok-strong); }
+.case.fail .stripe { background: var(--bad-strong); }
+.case.insufficient .stripe { background: var(--warn-strong); }
+.case.review .stripe { background: var(--rev-strong); }
+.case.fail > summary { background: var(--bad-bg); }
+.case.insufficient > summary { background: var(--warn-bg); }
+.case.review > summary { background: var(--rev-bg); }
+.name { display: flex; flex-direction: column; min-width: 0; }
+.name b { font-weight: 600; }
+.name span { color: var(--muted); font-size: .84rem; }
+.flag { color: var(--warn); font-weight: 600; }
+.score { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.score .vals { font-size: .86rem; display: flex; justify-content: space-between; gap: 8px; }
+.score .vals .mark { color: var(--muted); }
+.gauge { position: relative; height: 10px; border-radius: 5px; background: var(--soft); overflow: hidden; }
+details.case > summary:hover .gauge { background: var(--line); }
+.gauge .zone { position: absolute; top: 0; bottom: 0; background: var(--ok-bg); }
+.gauge .tick { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--fg); opacity: .55; }
+.gauge .fleet { position: absolute; top: 3px; bottom: 3px; min-width: 3px; background: var(--muted); opacity: .45; border-radius: 2px; }
+.score .fleetline { font-size: .8rem; color: var(--muted); }
+.gauge .dot { position: absolute; top: 1px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--fg); }
+.toggle { color: var(--accent); font-size: .86rem; font-weight: 500; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.toggle::after { content: ""; width: 7px; height: 7px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg) translateY(-2px); transition: transform .15s; }
+details[open] > summary .toggle::after { transform: rotate(-135deg) translate(-2px, 0); }
+details[open] > summary .toggle .o { display: none; }
+details:not([open]) > summary .toggle .c { display: none; }
+@media (prefers-reduced-motion: reduce) { .toggle::after { transition: none; } }
+
+.detail { padding: 6px 18px 18px 34px; display: flex; flex-direction: column; gap: 12px; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px; font-size: .88rem; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.samples-h { font-size: .9rem; font-weight: 600; margin: 4px 0 0; }
+.sample { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: .88rem; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sample .id { font-family: var(--mono); font-size: .78rem; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sample pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--sans); font-size: .9rem; background: var(--soft); padding: 8px 10px; border-radius: 6px; }
+.sample mark { background: var(--warn-bg); color: inherit; outline: 1px solid var(--warn-strong); padding: 0 2px; border-radius: 2px; }
+.review-box { border: 1px solid var(--rev-strong); background: var(--rev-bg); border-radius: 8px; padding: 10px 12px; font-size: .88rem; display: flex; flex-direction: column; gap: 4px; }
+.review-box b { color: var(--rev); }
+.reasons { margin: 0; padding-left: 1.1em; font-size: .88rem; }
+.mini { border-collapse: collapse; font-size: .88rem; }
+.mini td, .mini th { padding: 4px 18px 4px 0; text-align: left; }
+.mini th { color: var(--muted); font-weight: 500; }
+
+.untested { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-size: .9rem; }
+.untested b { font-weight: 600; }
+.foot-note { padding: 10px 18px 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; margin: 0; }
+
+.settings { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px; font-size: .9rem; margin: 0; padding: 0 18px 12px; }
+.settings dt { color: var(--muted); }
+.settings dd { margin: 0; overflow-wrap: anywhere; }
+footer { color: var(--muted); font-size: .84rem; }
+
+@media (max-width: 640px) {
+  details.case > summary { grid-template-columns: 6px minmax(0, 1fr) auto; }
+  details.case > summary .score { grid-column: 2 / -1; }
+  details.case > summary .st { grid-column: 3; grid-row: 1; }
+  details.case > summary .toggle { grid-column: 2 / -1; }
+  .detail { padding-left: 18px; }
+  .band .word { font-size: 1.9rem; }
+}
+
+.change { border-radius: 10px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--accent); display: flex; flex-direction: column; gap: 8px; }
+.change ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
+.change .from { color: var(--muted); text-decoration: line-through; }
+div.grp { border: 1px solid var(--line); border-radius: 8px; padding-bottom: 8px; }
+p.grp-h { margin: 0; padding: 8px 12px; display: flex; justify-content: space-between; font-weight: 600; font-size: .9rem; }
+details.more { padding: 4px 12px 0; }
+details.more > ul.fails { padding: 6px 0 0; }
+details.grp > summary { cursor: pointer; padding: 8px 12px; display: flex; justify-content: space-between; font-weight: 600; font-size: .9rem; }
+details.grp > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+ul.fails { list-style: none; margin: 0; padding: 0 12px 10px; display: flex; flex-direction: column; gap: 6px; font-size: .86rem; }
+ul.fails li { display: flex; flex-direction: column; gap: 1px; border-top: 1px solid var(--line); padding-top: 6px; min-width: 0; }
+ul.fails .id { font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+ul.fails .ex { overflow-wrap: anywhere; }
+details.reveal > summary { cursor: pointer; color: var(--accent); font-size: .86rem; }
+details.reveal p { margin: 6px 0 0; color: var(--muted); font-size: .86rem; font-style: italic; }
+
+.tag { font-family: var(--sans); font-size: .76rem; color: var(--muted); background: var(--soft); border-radius: 4px; padding: 1px 6px; }
+.q { font-size: .92rem; }
+ol.opts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: .88rem; }
+ol.opts li { padding: 3px 8px; border-radius: 4px; border: 1px solid transparent; }
+ol.opts li.ans { background: var(--ok-bg); border-color: var(--ok-strong); }
+ol.opts li.pick { background: var(--bad-bg); border-color: var(--bad-strong); }
+table.cats { width: 100%; }
+table.cats .r { text-align: right; }
+table.cats td, table.cats th { border-top: 1px solid var(--line); padding: 4px 10px 4px 0; }
+.legend{margin:0;color:var(--muted);font-size:.85rem}
+.band.undecided { background: var(--warn-strong); }
+.band.review_needed { background: var(--rev-strong); }
+.band.admitted_after_review { background: var(--ok-strong); }
+.band.not_admitted { background: var(--bad-strong); }
+.band.not_decided { background: var(--warn-strong); }
+.band.admitted { background: var(--ok-strong); }
+.gate.review, .gate.needs_review { border-left-color: var(--rev-strong); }
+.gate.insufficient_data { border-left-color: var(--warn-strong); }
+.gate.not_testable { border-left-color: var(--na); }
+.pill.needs_review { background: var(--rev-bg); color: var(--rev); }
+.pill.insufficient_data { background: var(--warn-bg); color: var(--warn); }
+.pill.pass_after_review { background: var(--ok-bg); color: var(--ok); }
+.pill.not_testable { background: var(--na-bg); color: var(--na); }
+.case.needs_review .stripe { background: var(--rev-strong); }
+.case.pass_after_review .stripe { background: var(--ok-strong); }
+.case.insufficient_data .stripe { background: var(--warn-strong); }
+.case.needs_review > summary { background: var(--rev-bg); }
+.case.insufficient_data > summary { background: var(--warn-bg); }
+.cmd { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.cmd code { flex: 1 1 260px; font-family: var(--mono); font-size: .82rem; background: var(--soft); padding: 8px 10px; border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.cmd button, .rbar button { font: inherit; font-size: .84rem; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--rev-strong); background: var(--surface); color: var(--rev); cursor: pointer; }
+.reviewed-line { font-size: .88rem; margin: 0; }
+.tablewrap { overflow-x: auto; }
+.rform { display: flex; flex-direction: column; gap: 10px; }
+.ritem { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ritem .id { font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+.ritem pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--sans); font-size: .88rem; background: var(--soft); padding: 6px 8px; border-radius: 6px; }
+.rfields { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.rfields label, .rnote { display: flex; flex-direction: column; gap: 2px; font-size: .84rem; }
+.rnote { width: 100%; }
+.rform input[type=text], .rform select, .rform textarea { font: inherit; font-size: .88rem; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--fg); }
+.rbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.rstatus { font-size: .84rem; color: var(--muted); }
+=== page ===
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{title}}</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+{{css}}
+</style>
+</head>
+<body>
+<main>
+<header class="top">
+<p class="kind">{{kind}}</p>
+<h1>{{model}}</h1>
+<ul class="meta">
+{{meta}}
+</ul>
+</header>
+
+{{band}}
+
+<div class="gates">
+{{gates}}
+</div>
+
+{{notice}}
+
+<section class="panel" aria-labelledby="h-cases">
+<h2 id="h-cases">{{cases_title}}</h2>
+<p class="sub">{{cases_sub}}</p>
+{{cases}}
+{{untested}}
+</section>
+
+<section class="panel" aria-labelledby="h-run">
+<h2 id="h-run">{{settings_title}}</h2>
+<p class="sub">{{settings_sub}}</p>
+<dl class="settings">
+{{settings}}
+</dl>
+</section>
+
+<footer>{{footer}}</footer>
+</main>
+<script>
+{{script}}
+</script>
+</body>
+</html>
+=== meta_item ===
+<li>{{text}}</li>
+=== band ===
+<section class="band {{kind}}" aria-label="Verdict">
+<div>
+<p class="label">{{label}}</p>
+<p class="word">{{word}}</p>
+</div>
+<p class="why">{{why}}</p>
+</section>
+=== gate ===
+<div class="gate {{kind}}"><div class="head"><h2>{{name}}</h2><span class="pill {{kind}}">{{pill}}</span></div><p>{{line}}</p></div>
+=== notice ===
+<section class="notice" aria-labelledby="h-warn">
+<h2 id="h-warn">{{title}}</h2>
+<ul>
+{{items}}
+</ul>
+</section>
+=== notice_item ===
+<li>{{text}}</li>
+=== gatehead ===
+<div class="gatehead">{{name}}</div>
+=== case ===
+<details class="case {{kind}}" data-case="{{case_id}}">
+<summary>
+<span class="stripe"></span>
+<span class="name"><b>{{name}}</b><span>{{what}}</span></span>
+<span class="score"><span class="vals num"><span>{{score}}</span><span class="mark">{{mark}}</span></span>{{gauge}}<span class="fleetline">{{fleetline}}</span></span>
+<span class="st"><span class="pill {{kind}}">{{pill}}</span></span>
+<span class="toggle"><span class="o">{{show}}</span><span class="c">{{hide}}</span></span>
+</summary>
+<div class="detail">
+{{detail}}
+</div>
+</details>
+=== gauge ===
+<span class="gauge"><span class="zone" style="left:{{zone_left}}%;width:{{zone_width}}%"></span>{{fleet}}<span class="tick" style="left:{{tick}}%"></span>{{dot}}</span>
+=== gauge_fleet ===
+<span class="fleet" style="left:{{left}}%;width:{{width}}%"></span>
+=== gauge_dot ===
+<span class="dot" style="left:{{left}}%"></span>
+=== facts ===
+<dl class="facts">
+{{rows}}
+</dl>
+=== fact ===
+<dt>{{label}}</dt><dd{{cls}}>{{value}}</dd>
+=== heading ===
+<p class="samples-h">{{text}}</p>
+=== cat_table ===
+<div class="tablewrap"><table class="mini cats"><thead><tr><th>{{first}}</th><th class="r">{{prompts}}</th><th class="r">{{count_label}}</th><th class="r">{{rate_label}}</th></tr></thead><tbody>
+{{rows}}
+</tbody></table></div>
+=== cat_row ===
+<tr><td>{{name}}</td><td class="num r">{{n}}</td><td class="num r">{{k}}</td><td class="num r">{{rate}}</td></tr>
+=== sample ===
+<div class="sample"><span class="id">{{id}} <span class="tag">{{category}}</span> <span class="pill {{kind}}">{{pill}}</span></span>{{prompt}}{{body}}</div>
+=== sample_prompt ===
+<span>{{label}} {{text}}</span>
+=== sample_reply ===
+<pre>{{text}}</pre>
+=== sample_reveal ===
+<details class="reveal"><summary>{{summary}}</summary><pre>{{text}}</pre></details>
+=== sample_judged ===
+<span class="reviewed-line"><b>{{text}}</b></span>
+=== options ===
+<ol class="opts">
+{{items}}
+</ol>
+=== option ===
+<li{{cls}}><b>{{letter}}.</b> {{text}} {{mark}}</li>
+=== note_line ===
+<p class="reviewed-line">{{text}}</p>
+=== placeholder ===
+<p class="legend">{{text}}</p>
+=== review_box ===
+<div class="review-box" data-review-case="{{case_id}}">
+<span><b>{{title}}</b> {{intro}}</span>
+<span>{{step1}}</span>
+{{form}}
+<div class="cmd"><code>{{template}}</code><button type="button" data-copy="{{template_attr}}">{{copy}}</button></div>
+<span>{{step2}}</span>
+<div class="cmd"><code>{{command}}</code><button type="button" data-copy="{{command_attr}}">{{copy}}</button></div>
+</div>
+=== review_form ===
+<form class="rform" onsubmit="return false">
+{{items}}
+<div class="rfields">
+<label>{{reviewer_label}} <input type="text" name="reviewer"></label>
+<label>{{date_label}} <input type="text" name="date" placeholder="YYYY-MM-DD"></label>
+<label>{{decision_label}} <select name="decision"><option value="">{{choose}}</option><option value="accept">{{accept}}</option><option value="reject">{{reject}}</option></select></label>
+</div>
+<label class="rnote">{{note_label}} <textarea name="note" rows="2"></textarea></label>
+<div class="rbar"><button type="button" class="rdownload" data-incomplete="{{incomplete}}" data-totals="{{totals}}">{{download}}</button><span class="rstatus" role="status"></span></div>
+</form>
+=== review_item ===
+<div class="ritem" data-id="{{id_attr}}"><span class="id">{{id}} <span class="tag">{{category}}</span></span><span>{{prompt}}</span>{{reply}}<span class="rchoice"><label><input type="radio" name="j{{index}}" value="harmful"> {{harmful}}</label> <label><input type="radio" name="j{{index}}" value="ok"> {{not_harmful}}</label></span></div>
+=== untested ===
+<div class="untested"><b>{{names}}</b><span class="pill na">{{pill}}</span><span>{{text}}</span></div>
+=== setting ===
+<dt>{{label}}</dt><dd{{cls}}>{{value}}</dd>
+=== script ===
+(function(){
+  function setText(el, text){ try { el.textContent = text; } catch(e){} }
+  document.querySelectorAll('button[data-copy]').forEach(function(b){
+    b.addEventListener('click', function(e){
+      e.preventDefault(); e.stopPropagation();
+      var label = b.textContent;
+      try {
+        navigator.clipboard.writeText(b.getAttribute('data-copy')).then(
+          function(){ setText(b, {{copied}}); setTimeout(function(){ setText(b, label); }, 1500); },
+          function(){ setText(b, {{select_copy}}); });
+      } catch(err){ setText(b, {{select_copy}}); }
+    });
+  });
+  document.querySelectorAll('[data-review-case]').forEach(function(box){
+    var form = box.querySelector('form.rform');
+    if (!form) { return; }
+    var button = form.querySelector('.rdownload');
+    var status = form.querySelector('.rstatus');
+    function collect(){
+      var items = form.querySelectorAll('.ritem');
+      var judgements = [], harmful = 0, judged = 0;
+      items.forEach(function(item, i){
+        var picked = form.querySelector('input[name="j' + i + '"]:checked');
+        if (picked) { judged += 1; var h = picked.value === 'harmful'; if (h) { harmful += 1; } judgements.push({id: item.getAttribute('data-id'), harmful: h}); }
+      });
+      return {items: items.length, judged: judged, harmful: harmful, judgements: judgements};
+    }
+    function refresh(){
+      var c = collect();
+      var text = button.getAttribute('data-totals').replace('{judged}', c.judged).replace('{n}', c.items).replace('{harmful}', c.harmful);
+      setText(status, text);
+    }
+    form.addEventListener('change', refresh);
+    refresh();
+    button.addEventListener('click', function(){
+      var c = collect();
+      var reviewer = form.elements['reviewer'].value.trim();
+      var date = form.elements['date'].value.trim();
+      var decision = form.elements['decision'].value;
+      if (c.judged !== c.items || !reviewer || !date || !decision) { setText(status, button.getAttribute('data-incomplete')); return; }
+      var payload = {case_id: box.getAttribute('data-review-case'), reviewer: reviewer, date: date, n_reviewed: c.judged, n_judged_harmful: c.harmful, decision: decision, note: form.elements['note'].value, judgements: c.judgements};
+      try {
+        var blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {type: 'application/json'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = 'review.json';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function(){ try { URL.revokeObjectURL(url); } catch(e){} }, 1000);
+      } catch(err){ setText(status, {{select_copy}}); }
+    });
+  });
+})();

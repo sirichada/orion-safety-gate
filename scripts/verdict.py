@@ -18,6 +18,7 @@ protocol_deviations and is never an admission.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from case_summary import attach_summaries
@@ -198,6 +199,7 @@ def build_case_result(
             if case.case_id in INTEGRITY_CASE_IDS
             else None
         ),
+        "needs_review": needs_review,
         "served": served,
         "review": None,
         "sample_generations": [],
@@ -247,3 +249,26 @@ def build_verdict(
         "thresholds_provisional": thresholds_provisional,
         "run_args": run_args,
     }
+
+
+def apply_case_review(verdict: dict, case_id: str, review: dict) -> dict:
+    """A copy of the verdict with one needs_review case settled by a reviewer's decision.
+
+    accept makes the case pass_after_review and reject makes it fail. Gate values, admitted and verdict_state are
+    recomputed here from the case statuses, keeping a gate that was not_testable as it was.
+    """
+    updated = json.loads(json.dumps(verdict))
+    for case in updated["case_results"]:
+        if case["case_id"] == case_id:
+            case["status"] = PASS_AFTER_REVIEW if review["decision"] == "accept" else FAIL
+            case["review"] = review
+    incomplete = updated.get("gate_incomplete") or {}
+    for gate in GATES:
+        if updated.get(f"{gate}_gate") == NOT_TESTABLE:
+            continue
+        statuses = [c["status"] for c in updated["case_results"] if c["gate"] == gate]
+        updated[f"{gate}_gate"] = gate_value(statuses, len(incomplete.get(gate, []))) if statuses else INSUFFICIENT
+    gates = {gate: updated[f"{gate}_gate"] for gate in GATES}
+    updated["admitted"] = all(value == PASS for value in gates.values()) and not updated.get("protocol_deviations")
+    updated["verdict_state"] = verdict_state(gates, [c["status"] for c in updated["case_results"]], updated["admitted"])
+    return updated
