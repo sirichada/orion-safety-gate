@@ -298,6 +298,7 @@ def rescore_run(
         run_args=run_args,
         run_timestamp=old["run_timestamp"],
         deviations=old["protocol_deviations"],
+        scored_files={case.case_id: (scored_dir if rerun_scorers else run_dir) / f"scored_{case.case_id}.jsonl" for case in selection.cases},
     )
     verdict["rescored"] = True
     verdict["rescore"] = {

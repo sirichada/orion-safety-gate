@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from case_summary import attach_summaries
 from cases import GATES, INTEGRITY_CASE_IDS, REGISTRY, Selection
 
 PASS, FAIL, INSUFFICIENT, NOT_TESTABLE = "pass", "fail", "insufficient_data", "not_testable"
@@ -212,7 +213,11 @@ def build_verdict(
     run_args: dict,
     run_timestamp: str | None = None,
     deviations: list[str] | None = None,
+    scored_files: dict | None = None,
 ) -> dict:
+    """scored_files maps case_id to its scored JSONL; given, each scored case gets category_summary and sample_generations."""
+    if scored_files:
+        attach_summaries(case_results, scored_files, model_id)
     incomplete = {gate: unattempted_cases(selection, gate) for gate in GATES}
     gates = {}
     for gate in GATES:

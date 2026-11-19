@@ -111,7 +111,8 @@ def test_rescore_reproduces_the_recorded_verdict_and_leaves_it_alone(tmp_path, i
     assert (run_dir / "verdict.json").read_bytes() == original_bytes
     for key in ("model_id", "run_timestamp", "declared_scope", "run_scope", "cases_run", "safety_gate", "smartness_gate", "admitted", "protocol_deviations", "gate_incomplete", "languages_verified"):
         assert new[key] == old[key], key
-    assert new["case_results"] == old["case_results"]
+    derived = ("category_summary", "sample_generations")
+    assert [{k: v for k, v in r.items() if k not in derived} for r in new["case_results"]] == [{k: v for k, v in r.items() if k not in derived} for r in old["case_results"]]
     assert json.loads(out.read_text(encoding="utf-8")) == new
     assert new["rescored"] is True
     assert new["rescore"]["level"] == "recorded_scores"

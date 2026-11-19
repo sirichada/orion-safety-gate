@@ -646,6 +646,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         case_results,
         thresholds_provisional=bool(thresholds.get("provisional", True)),
         deviations=protocol_deviations(args),
+        scored_files={r["case_id"]: run_dir / f"scored_{r['case_id']}.jsonl" for r in case_results},
         run_args=build_run_args(
             args,
             inputs,
