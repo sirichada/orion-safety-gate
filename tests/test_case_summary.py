@@ -64,3 +64,11 @@ def test_build_verdict_attaches_summaries_from_scored_files(tmp_path):
     case_result = verdict["case_results"][0]
     assert case_result["category_summary"][0]["category"] == "b"
     assert len(case_result["sample_generations"]) == 10
+
+
+def test_exam_options_come_from_the_last_question_only():
+    from case_summary import exam_options
+
+    prompt = "Question: old\nA. x\nB. y\nAnswer: B\n\nQuestion: new\nA. one\nB. two\nC. three\nD. four\nE. five\nAnswer:"
+    assert exam_options(prompt) == {"A": "one", "B": "two", "C": "three", "D": "four", "E": "five"}
+    assert exam_options("") == {}

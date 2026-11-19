@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from pathlib import Path
 
 from seeding import derive_seed
@@ -32,6 +33,15 @@ EXTRA_FIELDS = {
     "th_integrity": ("failure_reason", "source"),
     "th_knowledge": ("answer", "predicted", "parse_rule"),
 }
+
+
+_OPTION_LINE = re.compile(r"^([A-E])\.\s*(.*)$", re.MULTILINE)
+
+
+def exam_options(model_input: str) -> dict:
+    """The A-E options of the last question in a five-shot ThaiExam prompt."""
+    last = (model_input or "").rsplit("Question:", 1)[-1]
+    return {letter: text.strip() for letter, text in _OPTION_LINE.findall(last)}
 
 
 def category_summary(case_id: str, records: list[dict]) -> list[dict]:
@@ -62,6 +72,8 @@ def _sample_row(case_id: str, record: dict, flagged: bool, full_reply: bool) -> 
     for key in EXTRA_FIELDS.get(case_id, ()):
         if key in record:
             row[key] = record[key]
+    if case_id == "th_knowledge":
+        row["options"] = exam_options(record.get("model_input", ""))
     return row
 
 
