@@ -12,12 +12,13 @@ The reply's letter is taken by the first rule that fires, on the reply content o
   in the final 300 characters followed by a letter A-E. A lowercase letter counts only when no
   word follows it.
 - marker_explicit: a LaTeX boxed{X} or "<|answer|>X</|answer|>" in the final 300 characters (the
-  last of these and of the markers above wins, and any of them outranks the weak forms); failing
-  those, the last Thai "ข้อ X" / "ตอบ X" in that window, but only when the reply ends within 12
-  non-Thai characters of it or a conclusion phrase (จึงเป็น, เป็นคำตอบ, ถูกต้อง, ถูก) follows the
-  letter directly. These forms take capital letters only.
+  last of these and of the markers above wins). These take capital letters only.
 - last_line: the last non-empty line is a lone letter ("C", "**C**", "(C)", "C.", "C)"), or an
   option echo ("C. 12.5") when it is the only option-formatted line in the reply.
+- marker_explicit, weak form, only when nothing above fired: the last Thai "ข้อ X" / "ตอบ X" in
+  the final 300 characters, counted only when the reply ends within 12 characters of it (no Thai
+  letter and no other capital A-E among them) or a conclusion phrase follows the letter directly
+  (จึงเป็น, เป็นคำตอบ, or ถูกต้อง / ถูก ending at a word boundary and not followed by หรือไม่).
 A letter elsewhere in the text is never taken. A reply no rule fires on is unparsable, and an
 unparsable reply is wrong. Only a true generation failure (generation_failed without no_answer)
 is excluded.
@@ -65,7 +66,8 @@ _STRONG_UPPER = tuple(
 # An option mentioned in running text ("ข้อ A ผิด", "ตอบ A ก่อน แต่ ...") is not an answer, so these count only
 # when the reply ends there or a conclusion phrase follows the letter directly.
 _WEAK_UPPER = tuple(re.compile(pattern) for pattern in (r"ข้อ\s*([A-E])(?![A-Za-z0-9])", r"ตอบ\s*([A-E])(?![A-Za-z0-9])"))
-_CONCLUSION = re.compile(r"\s*(?:จึงเป็น|เป็นคำตอบ|ถูกต้อง|ถูก)")
+_CONCLUSION = re.compile(r"\s*(?:จึงเป็น|เป็นคำตอบ|(?:ถูกต้อง|ถูก)(?=\s|$|[.,!)]|ที่สุด)(?!\s*หรือไม่))")
+_OTHER_OPTION = re.compile(r"[A-E]")
 _THAI_LETTER = re.compile(r"[฀-๿]")
 WEAK_TRAILER_CHARS = 12
 _LONE_LETTER = re.compile(r"[\s*_`(\[]*([A-Ea-e])[\s*_`)\].]*")
@@ -95,16 +97,6 @@ def extract_letter(reply: str) -> tuple[str | None, str]:
         _, letter, rule = max(strong)
         return letter, rule
 
-    weak = []
-    for pattern in _WEAK_UPPER:
-        for m in pattern.finditer(tail):
-            rest = tail[m.end():]
-            at_end = len(rest.strip()) <= WEAK_TRAILER_CHARS and not _THAI_LETTER.search(rest)
-            if at_end or _CONCLUSION.match(rest):
-                weak.append((m.start(1), m.group(1)))
-    if weak:
-        return max(weak)[1], "marker_explicit"
-
     lines = [line for line in text.splitlines() if line.strip()]
     last = lines[-1]
     m = _LONE_LETTER.fullmatch(last)
@@ -113,6 +105,16 @@ def extract_letter(reply: str) -> tuple[str | None, str]:
     m = _OPTION_LINE_UPPER.match(last)
     if m and sum(1 for line in lines if _OPTION_LINE_UPPER.match(line)) == 1:
         return m.group(1).upper(), "last_line"
+
+    weak = []
+    for pattern in _WEAK_UPPER:
+        for m in pattern.finditer(tail):
+            rest = tail[m.end():]
+            at_end = len(rest.strip()) <= WEAK_TRAILER_CHARS and not _THAI_LETTER.search(rest) and not _OTHER_OPTION.search(rest)
+            if at_end or _CONCLUSION.match(rest):
+                weak.append((m.start(1), m.group(1)))
+    if weak:
+        return max(weak)[1], "marker_explicit"
     return None, "none"
 
 

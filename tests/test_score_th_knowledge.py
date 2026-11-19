@@ -223,6 +223,35 @@ def test_a_bare_thai_option_mention_counts_only_at_the_end_or_before_a_conclusio
     assert extract_letter(reply)[0] == letter
 
 
+@pytest.mark.parametrize(
+    "reply, letter, rule",
+    [
+        ("ข้อ A ถูกต้องบางส่วน แต่ไม่ครบ\nC", "C", "last_line"),
+        ("ข้อ B ถูกตัดออกเพราะผิด\n**D**", "D", "last_line"),
+        ("ข้อ A ถูกหลอกให้คิดว่าใช่\nC. 12.5", "C", "last_line"),
+        ("พิจารณา ข้อ B ถูกต้องหรือไม่ ไม่ใช่\n(E)", "E", "last_line"),
+    ],
+)
+def test_a_lone_letter_last_line_outranks_a_weak_thai_mention(reply, letter, rule):
+    assert extract_letter(reply) == (letter, rule)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "ระหว่าง ข้อ A, B",
+        "ระหว่าง ข้อ A or B?",
+        "ข้อ B ถูกหรือไม่ ลองดู",
+        "ข้อ B ถูกต้องหรือไม่ ลองดู",
+        "ข้อ B ถูกต้อง หรือไม่",
+        "ข้อ A ถูกตัดออก ดังนั้นเหลือ C",
+        "ข้อ A ถูกต้องบางส่วน",
+    ],
+)
+def test_a_weak_thai_mention_is_rejected_next_to_another_option_or_a_non_conclusion(reply):
+    assert extract_letter(reply) == (None, "none")
+
+
 def test_an_answer_outside_the_last_300_characters_is_not_read_when_an_option_mention_is_inside():
     long_tail = "เหตุผลประกอบการพิจารณา " * 20
     assert len(long_tail) > s.MARKER_WINDOW_CHARS

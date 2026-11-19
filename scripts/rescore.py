@@ -149,7 +149,9 @@ def _derived_notes(case, entry: dict, recorded_notes: str, summary: dict) -> str
     return "; ".join(part for part in (settings, saved, summary.get("notes", "")) if part)
 
 
-def _case_result(case, entry: dict, recorded: dict, summary: dict, notes: str) -> dict:
+def _case_result(case, entry: dict, recorded: dict, summary: dict, notes: str, *, rerun: bool = False) -> dict:
+    # A rerun scored with today's scorer, so it carries today's method; plain re-aggregation keeps the recorded one.
+    scoring_method = CASE_RUNNERS[case.case_id].scoring_method if rerun else recorded.get("scoring_method") or CASE_RUNNERS[case.case_id].scoring_method
     return build_case_result(
         case,
         score=summary["score"],
@@ -157,7 +159,7 @@ def _case_result(case, entry: dict, recorded: dict, summary: dict, notes: str) -
         n_scored=summary["n_scored"],
         threshold=entry["threshold"],
         min_scored=entry["min_scored"],
-        scoring_method=recorded.get("scoring_method") or CASE_RUNNERS[case.case_id].scoring_method,
+        scoring_method=scoring_method,
         notes=notes,
         n_truncated_inputs=recorded.get("n_truncated_inputs"),
         n_excluded=summary.get("n_generation_failed"),
@@ -225,7 +227,7 @@ def rescore_case(case, run_dir: Path, thresholds: dict, recorded: dict, *, rerun
     notes = summary.get("notes", "")
     if case.derived:
         notes = _derived_notes(case, entry, recorded.get("notes", ""), summary)
-    return _case_result(case, entry, recorded, summary, notes)
+    return _case_result(case, entry, recorded, summary, notes, rerun=rerun)
 
 
 def rescore_run(

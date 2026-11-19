@@ -231,6 +231,30 @@ def test_rerun_scorers_scores_the_responses_into_a_new_folder(tmp_path, integrit
     assert str(run_dir.resolve() / "rescore-S" / "scored_en_integrity.jsonl") == integrity_call[integrity_call.index("--out") + 1]
 
 
+def recorded_method_result(new, case_id):
+    return next(r for r in new["case_results"] if r["case_id"] == case_id)["scoring_method"]
+
+
+def test_a_plain_rescore_keeps_the_recorded_scoring_method_and_a_rerun_takes_the_current_one(tmp_path, integrity_summary):
+    run_dir, _ = make_run(tmp_path)
+
+    def relabel(verdict):
+        for result in verdict["case_results"]:
+            if result["case_id"] == "en_text":
+                result["scoring_method"] = "classifier_v0"
+
+    rewrite_verdict(run_dir, relabel)
+    plain, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path))
+    assert recorded_method_result(plain, "en_text") == "classifier_v0"
+
+    def stage(cmd, log):
+        write_jsonl(type(log)(cmd[cmd.index("--out") + 1]), en_text_records(1) if "score_en_text.py" in cmd[1] else over_refusal_records(1))
+        return 0
+
+    rerun, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path), rerun_scorers=True, run_stage=stage, stamp="S")
+    assert recorded_method_result(rerun, "en_text") == orchestrator.CASE_RUNNERS["en_text"].scoring_method != "classifier_v0"
+
+
 def test_rerun_scorers_needs_the_responses(tmp_path, integrity_summary):
     run_dir, _ = make_run(tmp_path)
     (run_dir / "responses_en_text.jsonl").unlink()

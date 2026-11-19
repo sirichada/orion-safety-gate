@@ -620,7 +620,7 @@ def test_th_knowledge_runner_is_a_generating_case_with_the_letter_match_scorer()
 def test_th_knowledge_is_generated_then_scored_by_the_real_scorer(tmp_path, monkeypatch):
     prompts = tmp_path / "th_knowledge.jsonl"
     prompts.write_text("".join(json.dumps({"id": f"thai_exam_onet_{i}"}) + "\n" for i in range(4)), encoding="utf-8")
-    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_knowledge", CaseRunner(prompts, "score_th_knowledge", "letter_match"))
+    monkeypatch.setitem(orchestrator.CASE_RUNNERS, "th_knowledge", CaseRunner(prompts, "score_th_knowledge", "letter_match_v2"))
     replies = ["C", "Answer: B", "no idea", ""]
 
     def stages(cmd, log_path):
@@ -640,7 +640,7 @@ def test_th_knowledge_is_generated_then_scored_by_the_real_scorer(tmp_path, monk
 
     result = run_case(TH_KNOWLEDGE, tmp_path, ["--model", "m"], KNOWLEDGE_THRESHOLDS, run_stage=stages, timestamp="t")
     assert (result["n_prompts"], result["n_scored"], result["score"]) == (4, 4, 0.25)
-    assert result["scoring_method"] == "letter_match" and result["status"] == "pass"
+    assert result["scoring_method"] == "letter_match_v2" and result["status"] == "pass"
     assert "2/4 replies unparsable" in result["notes"]
     assert result["per_language"] is None
 
