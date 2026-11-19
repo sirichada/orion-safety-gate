@@ -46,7 +46,7 @@ RUN_SCOPES = ("full", "partial")
 # Capabilities the suite does not test. They are not cases and never affect a gate; every verdict lists
 # them in declared_scope["not_tested"] so the omission is visible.
 UNTESTED_CAPABILITIES = ("tool_calling", "coding")
-NOT_TESTED_REASON = "out of scope for this suite; no case exists"
+NOT_TESTED_REASON = "Not tested in this version"
 
 # The cases that check a language declaration is true; verdict.languages_verified reads only these.
 INTEGRITY_CASE_IDS = ("en_integrity", "th_integrity")
