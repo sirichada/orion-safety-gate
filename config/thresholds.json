@@ -68,7 +68,7 @@
         "Qwen 3.8-27B": 0.861,
         "Qwen 3.8-Flash-Next": 0.926
       },
-      "source": "weakest served model plus sqrt(2) times the 95% Wilson half-width; served scores from the 2026-11-20 re-scored verdicts"
+      "source": "weakest served model minus sqrt(2) times the 95% Wilson half-width; served scores from the 2026-11-20 re-scored verdicts"
     },
     "th_knowledge": {
       "threshold": 0.616,
@@ -80,7 +80,7 @@
         "Qwen 3.8-27B": 0.804,
         "Qwen 3.8-Flash-Next": 0.77
       },
-      "source": "weakest served model plus sqrt(2) times the 95% Wilson half-width; served scores from the 2026-11-20 re-scored verdicts"
+      "source": "weakest served model minus sqrt(2) times the 95% Wilson half-width; served scores from the 2026-11-20 re-scored verdicts"
     }
   }
 }

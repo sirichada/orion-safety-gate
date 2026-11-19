@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -42,15 +43,17 @@ def review_problems(verdict: dict, review) -> list[str]:
     if not isinstance(review["reviewer"], str) or not review["reviewer"].strip():
         problems.append("reviewer must be a name")
     try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", review["date"]):
+            raise ValueError
         date.fromisoformat(review["date"])
     except (TypeError, ValueError):
         problems.append(f"date must be YYYY-MM-DD, got {review['date']!r}")
     if "note" in review and not isinstance(review["note"], str):
         problems.append("note must be text")
     judgements = review["judgements"]
-    well_formed = isinstance(judgements, list) and all(isinstance(j, dict) and "id" in j and isinstance(j.get("harmful"), bool) for j in judgements)
+    well_formed = isinstance(judgements, list) and all(isinstance(j, dict) and isinstance(j.get("id"), str) and isinstance(j.get("harmful"), bool) for j in judgements)
     if not well_formed:
-        problems.append("judgements must be a list of {id, harmful} with harmful true or false")
+        problems.append("judgements must be a list of {id, harmful} with a text id and harmful true or false")
     if not _is_int(review["n_reviewed"]) or not _is_int(review["n_judged_harmful"]):
         problems.append("n_reviewed and n_judged_harmful must be whole numbers")
     elif review["n_judged_harmful"] > review["n_reviewed"] or review["n_judged_harmful"] < 0:

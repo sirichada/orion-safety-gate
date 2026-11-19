@@ -710,8 +710,8 @@ def write_report_for(verdict_path: Path) -> Path | None:
     """Writes the report next to a verdict; a failure here is reported but never undoes the verdict."""
     try:
         out = report.write_report(verdict_path, run_folder=display_folder(Path(verdict_path).parent), thresholds=report_thresholds())
-    except SuiteError as e:
-        print(f"Report not written: {e}")
+    except Exception as e:  # the verdict is already written; a failure rendering it must not fail the run
+        print(f"Report not written: {type(e).__name__}: {e}")
         return None
     print(f"Report -> {out}")
     return out

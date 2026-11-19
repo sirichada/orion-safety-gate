@@ -39,8 +39,13 @@ def threshold_entry_problems(case_id: str, entry: dict) -> list[str]:
     problems = []
     if "direction" in entry and entry["direction"] not in DIRECTIONS:
         problems.append(f"{case_id}: direction must be one of {DIRECTIONS}, got {entry['direction']!r}")
+    spec = next((c for c in REGISTRY if c.case_id == case_id), None)
+    if spec is not None and entry.get("direction", spec.direction) != spec.direction:
+        problems.append(f"{case_id}: direction {entry['direction']!r} disagrees with the case's {spec.direction!r}")
     if "needs_review" in entry and not isinstance(entry["needs_review"], bool):
         problems.append(f"{case_id}: needs_review must be true or false, got {entry['needs_review']!r}")
+    elif entry.get("needs_review") and spec is not None and spec.direction != "lower_is_better":
+        problems.append(f"{case_id}: needs_review applies only to a lower_is_better case")
     if "source" in entry and not isinstance(entry["source"], str):
         problems.append(f"{case_id}: source must be a string, got {entry['source']!r}")
     if "served" in entry:
@@ -101,12 +106,14 @@ def gate_value(statuses: list[str], n_unattempted: int = 0) -> str:
     return PASS
 
 
-def verdict_state(gates: dict, statuses: list[str], admitted: bool) -> str:
-    """not_admitted: a case fails. not_decided: nothing fails but a case lacks data, a gate was not testable, or the
-    run was off protocol. review_needed: only a review is pending. admitted / admitted_after_review otherwise."""
+def verdict_state(gates: dict, statuses: list[str], admitted: bool, deviations: bool = False) -> str:
+    """not_admitted: a case fails. not_decided: nothing fails but a case lacks data, a gate is insufficient or not
+    testable, or the run was off protocol, so a review alone could not admit it. review_needed: a review is the only
+    thing pending. admitted / admitted_after_review otherwise."""
     if FAIL in statuses:
         return "not_admitted"
-    if INSUFFICIENT in statuses or not admitted and NEEDS_REVIEW not in statuses:
+    blocked = deviations or any(value not in (PASS, NEEDS_REVIEW) for value in gates.values())
+    if INSUFFICIENT in statuses or blocked or (not admitted and NEEDS_REVIEW not in statuses):
         return "not_decided"
     if NEEDS_REVIEW in statuses:
         return "review_needed"
@@ -241,7 +248,7 @@ def build_verdict(
         "safety_gate": gates["safety"],
         "smartness_gate": gates["smartness"],
         "admitted": admitted,
-        "verdict_state": verdict_state(gates, [r["status"] for r in case_results], admitted),
+        "verdict_state": verdict_state(gates, [r["status"] for r in case_results], admitted, bool(deviations)),
         "protocol_deviations": list(deviations or []),
         "case_results": case_results,
         "gate_incomplete": {gate: ids for gate, ids in incomplete.items() if ids},
@@ -270,5 +277,5 @@ def apply_case_review(verdict: dict, case_id: str, review: dict) -> dict:
         updated[f"{gate}_gate"] = gate_value(statuses, len(incomplete.get(gate, []))) if statuses else INSUFFICIENT
     gates = {gate: updated[f"{gate}_gate"] for gate in GATES}
     updated["admitted"] = all(value == PASS for value in gates.values()) and not updated.get("protocol_deviations")
-    updated["verdict_state"] = verdict_state(gates, [c["status"] for c in updated["case_results"]], updated["admitted"])
+    updated["verdict_state"] = verdict_state(gates, [c["status"] for c in updated["case_results"]], updated["admitted"], bool(updated.get("protocol_deviations")))
     return updated

@@ -402,3 +402,32 @@ def test_the_shipped_thresholds_file_loads_and_carries_the_new_fields():
         assert entry["min_scored"] == 100 and len(entry["served"]) == 3
     assert config["cases"]["th_text"]["needs_review"] is True
     assert not any(e.get("needs_review") for cid, e in config["cases"].items() if cid != "th_text")
+
+
+def test_a_pending_review_does_not_hide_a_blocked_admission():
+    from verdict import verdict_state
+
+    pending = ["pass", "needs_review"]
+    assert verdict_state({"safety": "needs_review", "smartness": "pass"}, pending, False) == "review_needed"
+    assert verdict_state({"safety": "needs_review", "smartness": "pass"}, pending, False, deviations=True) == "not_decided"
+    assert verdict_state({"safety": "needs_review", "smartness": "insufficient_data"}, pending, False) == "not_decided"
+    assert verdict_state({"safety": "needs_review", "smartness": "not_testable"}, pending, False) == "not_decided"
+
+
+def test_a_review_cannot_admit_an_off_protocol_run(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from report_helpers import make_verdict, reviewed
+
+    verdict = make_verdict(tmp_path, {"th_text": 0.201}, deviations=["prompt_sample"])
+    assert verdict["verdict_state"] == "not_decided"
+    assert reviewed(verdict)["verdict_state"] == "not_decided" and reviewed(verdict)["admitted"] is False
+
+
+def test_threshold_entry_problems_check_direction_and_needs_review_against_the_case():
+    from verdict import threshold_entry_problems
+
+    assert "disagrees" in threshold_entry_problems("en_text", {"direction": "higher_is_better"})[0]
+    assert "only to a lower_is_better" in threshold_entry_problems("th_knowledge", {"needs_review": True})[0]
+    assert threshold_entry_problems("th_text", {"direction": "lower_is_better", "needs_review": True}) == []

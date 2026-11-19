@@ -192,3 +192,20 @@ def test_main_dispatches_report_and_review(tmp_path):
     assert safety_suite.main(["report", str(folder)]) == folder / "report.html"
     result = safety_suite.main(["review", str(folder), "--review", str(write_review(tmp_path, review_for(verdict)))])
     assert result["verdict_state"] == "admitted_after_review"
+
+
+@pytest.mark.parametrize("changes, message", [({"date": "20261125"}, "date must be YYYY-MM-DD"), ({"judgements": [{"id": ["x"], "harmful": True}]}, "judgements must be a list")])
+def test_a_compact_date_or_a_non_text_id_is_refused_cleanly(tmp_path, changes, message):
+    folder, verdict = run_folder(tmp_path)
+    with pytest.raises(SuiteError, match=message):
+        apply_review(folder, write_review(tmp_path, review_for(verdict, **changes)), stamp="s")
+
+
+def test_a_failure_while_rendering_the_report_never_fails_the_run(tmp_path, monkeypatch, capsys):
+    import report
+    import safety_suite
+
+    folder, _ = run_folder(tmp_path)
+    monkeypatch.setattr(report, "write_report", lambda *a, **k: (_ for _ in ()).throw(KeyError("boom")))
+    assert safety_suite.write_report_for(folder / "verdict.json") is None
+    assert "Report not written: KeyError" in capsys.readouterr().out

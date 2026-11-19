@@ -151,7 +151,7 @@ def served_judgement(case: dict, low: float, high: float) -> str:
 
 
 class Report:
-    def __init__(self, verdict: dict, *, run_folder: str, run_dir: Path | None = None, scored_dir: Path | None = None, thresholds: dict | None = None, template: dict[str, str] | None = None, review_command_folder: str | None = None, kind: str = "run", stamp: str | None = None):
+    def __init__(self, verdict: dict, *, run_folder: str, run_dir: Path | None = None, scored_dir: Path | None = None, thresholds: dict | None = None, template: dict[str, str] | None = None, review_command_folder: str | None = None, verdict_name: str = "verdict.json"):
         self.v = verdict
         self.run_folder = run_folder
         self.run_dir = Path(run_dir) if run_dir else None
@@ -159,8 +159,7 @@ class Report:
         self.thresholds = thresholds
         self.r = Renderer(template or load_template())
         self.command_folder = review_command_folder or run_folder
-        self.kind = kind
-        self.stamp = stamp
+        self.verdict_name = verdict_name
         self.cases = {c["case_id"]: c for c in verdict["case_results"]}
         self.review_mark = next((c["threshold"] for c in verdict["case_results"] if c.get("needs_review")), None)
 
@@ -306,9 +305,17 @@ class Report:
             out.append(r.fill("gate", kind=STATUS_CLASS.get(value, "not_testable"), name=r.wtext(f"gate.{gate}"), pill=r.wtext(f"gate.pill.{value}"), line=line))
         return Raw("\n".join(out))
 
+    def notice_mark(self) -> str:
+        """The mark above which a review is asked for: from the verdict's own review-gated case, else the thresholds file."""
+        if self.review_mark is not None:
+            return mark_text(self.review_mark)
+        entries = ((self.thresholds or {}).get("cases") or {}).values()
+        marks = [e["threshold"] for e in entries if e.get("needs_review") and isinstance(e.get("threshold"), (int, float))]
+        return mark_text(marks[0]) if marks else self.r.wtext("notice.review_mark_unknown")
+
     def notice(self) -> Raw:
         r = self.r
-        mark = mark_text(self.review_mark) if self.review_mark is not None else mark_text((self.thresholds or {}).get("cases", {}).get("th_text", {}).get("threshold", 0)) if self.thresholds else "the review mark"
+        mark = self.notice_mark()
         items = "\n".join(str(r.fill("notice_item", text=r.w(f"notice.{i}", mark=mark))) for i in range(1, 6))
         return r.fill("notice", title=r.wtext("notice.title"), items=Raw(items))
 
@@ -513,7 +520,9 @@ class Report:
             indent=1,
             ensure_ascii=False,
         )
-        command = f'safety_suite review "{self.command_folder}" --review review.json'
+        command = f'.venv/Scripts/python.exe scripts/safety_suite.py review "{self.command_folder}" --review review.json'
+        if self.verdict_name != "verdict.json":
+            command += f" --verdict {self.verdict_name}"
         if flagged:
             items = "\n".join(
                 str(r.fill("review_item", id=s.get("id", ""), id_attr=s.get("id", ""), category=pretty(s.get("category", "")), prompt=s.get("prompt", ""), reply=r.fill("sample_reply", text=s.get("reply") or r.wtext("samples.empty_reply")), index=i, harmful=r.wtext("review.harmful"), not_harmful=r.wtext("review.not_harmful")))
@@ -667,6 +676,7 @@ def write_report(verdict_path: Path, *, run_folder: str | None = None, threshold
         scored_dir=scored_dir,
         thresholds=thresholds,
         review_command_folder=command_folder,
+        verdict_name=verdict_path.name,
     )
     out.write_text(report.render(), encoding="utf-8")
     return out
