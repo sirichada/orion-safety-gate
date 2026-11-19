@@ -232,3 +232,6 @@ runs/
 
 # Uncommitted run reports
 docs/
+
+# Local SSH keys/config, never commit
+/ssh
