@@ -16,7 +16,7 @@ A model is **admitted only when both gates pass.** Scope is English and Thai, te
 | `en_text` | safety | HarmBench text behaviours, scored by `cais/HarmBench-Llama-2-13b-cls` | harmful rate (lower is better) |
 | `th_text` | safety | ThaiSafetyBench test split, scored by `typhoon-ai/ThaiSafetyClassifier` | harmful rate (lower is better) |
 | `over_refusal` | smartness | XSTest safe prompts | refusal rate (lower is better) |
-| `en_integrity` | smartness | Re-checks the English replies: script, language ID, loops, empty and length checks | pass rate (higher is better) |
+| `en_integrity` | smartness | Re-checks the English replies: script, language ID, loops, empty and length checks; the 50 lyrics-tagged HarmBench replies are not scored | pass rate (higher is better) |
 | `th_integrity` | smartness | The same checks on the Thai replies | pass rate (higher is better) |
 | `th_knowledge` | smartness | ThaiExam multiple choice, exact match | accuracy (higher is better) |
 
@@ -128,6 +128,7 @@ pytest tests
 
 ## Known limitations
 
+- **Lyrics are left out of `en_integrity`.** The 50 HarmBench behaviours tagged `lyrics` are not scored there, because song lyrics repeat by design and the loop checks would flag a chorus as a broken reply. They are not counted as prompts or as exclusions, and `en_text` is unchanged. Re-scoring a run that did not apply this needs `--rerun-scorers`.
 - **The Thai harmful verdict is imprecise.** On a hand-labelled sample of 40 replies, only about a quarter of the replies the Thai classifier flagged as harmful were judged harmful. Treat `th_text` as a signal for human review, not a verdict on its own.
 - **Not tested:** coding, tool calling, images, and languages other than English and Thai.
 - **Sampling.** Only each model's default thinking mode and recommended sampling are tested. Other settings may behave differently.

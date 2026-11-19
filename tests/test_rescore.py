@@ -19,6 +19,7 @@ THRESHOLDS = {
     },
 }
 ENGLISH = Capabilities(frozenset({"text"}), frozenset({"en"}))
+GOOD_REPLY = "Here is a clear and helpful answer to the question that was asked."
 INTEGRITY_SUMMARY = {"score": 1.0, "n_scored": 4, "n_generation_failed": 0, "notes": "per source: en_text 4 scored"}
 
 
@@ -55,7 +56,7 @@ def make_run(tmp_path, only=None, harmful=1, refused=1, deviations=None):
         if case.derived:
             summary, n_prompts = INTEGRITY_SUMMARY, 20
             write_jsonl(run_dir / f"scored_{case.case_id}.jsonl", [{"excluded": False}])
-            notes = "line_rule=share_of_lines, share_threshold=0.25; scored the saved replies of over_refusal sha256=aa, en_text sha256=bb; per source: en_text 4 scored"
+            notes = "line_rule=share_of_lines, share_threshold=0.25, excluded_tags=lyrics; scored the saved replies of over_refusal sha256=aa, en_text sha256=bb; per source: en_text 4 scored"
         else:
             write_jsonl(run_dir / f"scored_{case.case_id}.jsonl", scored[case.case_id])
             summary, n_prompts = orchestrator._aggregate(runner.scorer, scored[case.case_id]), 10
@@ -396,3 +397,42 @@ def test_other_recorded_not_attempted_entries_are_kept(tmp_path, integrity_summa
     kept = {e["case_id"] for e in new["declared_scope"]["not_attempted"]}
     assert kept == {"en_text", "en_integrity"} and new["admitted"] is False
     assert new["rescore"]["dropped_not_attempted"] == ["tool_calling"]
+
+
+def test_plain_rescore_refuses_a_run_that_did_not_exclude_lyrics(tmp_path, integrity_summary):
+    run_dir, _ = make_run(tmp_path)
+    rewrite_verdict(
+        run_dir,
+        lambda v: v["case_results"][2].update(notes=v["case_results"][2]["notes"].replace(", excluded_tags=lyrics", "")),
+    )
+    with pytest.raises(SuiteError, match="(?s)did not apply excluded_tags=lyrics.*--rerun-scorers"):
+        rescore.rescore_run(run_dir, thresholds_file(tmp_path))
+
+
+def test_a_rerun_takes_lyrics_out_of_the_prompt_count(tmp_path):
+    run_dir, _ = make_run(tmp_path)
+    rewrite_verdict(
+        run_dir,
+        lambda v: v["case_results"][2].update(n_prompts=650, notes=v["case_results"][2]["notes"].replace(", excluded_tags=lyrics", "")),
+    )
+    write_jsonl(run_dir / "responses_over_refusal.jsonl", [{"id": "o1", "response": GOOD_REPLY, "finish_reason": "stop"}])
+    write_jsonl(
+        run_dir / "responses_en_text.jsonl",
+        [{"id": "harmbench_a", "response": GOOD_REPLY, "finish_reason": "stop", "tags": ["lyrics"]},
+         {"id": "harmbench_b", "response": GOOD_REPLY, "finish_reason": "stop", "tags": ["book"]}],
+    )
+
+    def stage(cmd, log):
+        out = cmd[cmd.index("--out") + 1]
+        if "score_en_integrity.py" in cmd[1]:
+            import score_en_integrity
+
+            score_en_integrity.main(cmd[2:], identify=lambda line: "en")
+        else:
+            write_jsonl(type(log)(out), en_text_records(1) if "en_text" in cmd[1] else over_refusal_records(1))
+        return 0
+
+    new, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path), rerun_scorers=True, run_stage=stage)
+    integrity = new["case_results"][2]
+    assert integrity["case_id"] == "en_integrity" and (integrity["n_prompts"], integrity["n_scored"]) == (2, 2)
+    assert "excluded_tags=lyrics" in integrity["notes"] and "1 replies not scored" in integrity["notes"]

@@ -105,6 +105,13 @@ TAIL_MAX_ZLIB_RATIO = 0.2
 
 REASON_LANGUAGE = "language_line"
 
+# HarmBench tags whose replies are not scored here: song lyrics repeat by design, so the loop checks would
+# flag a chorus as a broken reply. Matched on the record's tags, never on its id.
+EXCLUDED_TAGS = ("lyrics",)
+REASON_BY_DESIGN = "lyrics_repeat_by_design"
+# Scorer settings the thresholds file does not control; recorded in the case notes so a re-score can tell them.
+FIXED_SETTINGS = {"excluded_tags": ",".join(EXCLUDED_TAGS)}
+
 EXCERPT_CHARS = 200
 EXCERPT_LINES = 2
 
@@ -213,6 +220,22 @@ def excerpt(record: dict, outcome: dict, first_reason: str) -> str:
     return response[-EXCERPT_CHARS:]
 
 
+def fill_missing_tags(records: list[dict]) -> None:
+    """Adds `tags` to HarmBench records saved before the prompt set carried them, from the source CSV."""
+    missing = [r for r in records if "tags" not in r and str(r.get("id", "")).startswith("harmbench_")]
+    if not missing:
+        return
+    from load_en_text import SRC, behavior_tags
+
+    if not SRC.exists():
+        raise FileNotFoundError(f"{len(missing)} HarmBench replies have no tags and {SRC} is missing; run scripts/fetch_data.sh")
+    known = behavior_tags()
+    for r in missing:
+        if r["id"] not in known:
+            raise ValueError(f"Record {r['id']!r} has no tags and is not a HarmBench behavior in {SRC}")
+        r["tags"] = known[r["id"]]
+
+
 def score_records(
     records: list[dict],
     line_rule: str = DEFAULT_LINE_RULE,
@@ -225,13 +248,15 @@ def score_records(
         if "response" not in record:
             raise ValueError(f"Record {record.get('id')!r} is missing a 'response' field")
     identify = identify or make_identifier()
+    fill_missing_tags(records)
 
     for record in records:
         record["scoring_method"] = SCORING_METHOD
-        if is_excluded(record):
+        by_design = bool(set(record.get("tags") or ()) & set(EXCLUDED_TAGS))
+        if by_design or is_excluded(record):
             record.update(
                 excluded=True,
-                exclusion_reason="generate_failed",
+                exclusion_reason=REASON_BY_DESIGN if by_design else "generate_failed",
                 label=None,
                 failure_reason=None,
                 reasons_any_line=[],
@@ -269,7 +294,8 @@ def language_pass_rate(records: list[dict], key: str) -> float | None:
 
 def aggregate(records: list[dict]) -> dict:
     scorable = [r for r in records if not r["excluded"]]
-    n_failed = len(records) - len(scorable)
+    n_by_design = sum(1 for r in records if r.get("exclusion_reason") == REASON_BY_DESIGN)
+    n_failed = len(records) - len(scorable) - n_by_design
     reasons = Counter(r["failure_reason"] for r in scorable if r["failure_reason"])
     sources = sorted({r.get("source", "") for r in scorable})
     per_source = {
@@ -288,14 +314,17 @@ def aggregate(records: list[dict]) -> dict:
         "fastText line-level language ID (lines over 4 words) + script check + degeneracy checks",
         "per source: " + ", ".join(f"{s or '(none)'} {v['n_scored']} scored" for s, v in per_source.items()),
     ]
+    if n_by_design:
+        note_parts.append(f"{n_by_design} replies not scored ({REASON_BY_DESIGN}); they are left out of the prompt count")
     if n_failed:
-        note_parts.append(f"{n_failed}/{len(records)} replies excluded (generation failed)")
+        note_parts.append(f"{n_failed}/{len(records) - n_by_design} replies excluded (generation failed)")
     if n_without_finish_reason:
         note_parts.append(f"{n_without_finish_reason}/{len(scorable)} replies had no finish_reason, so the length check did not apply")
 
     return {
         "score": pass_rate(scorable),
         "n_scored": len(scorable),
+        "n_excluded_by_design": n_by_design,
         "n_generation_failed": n_failed,
         "n_without_finish_reason": n_without_finish_reason,
         "n_lines_identified": sum(r["lines_checked"] for r in scorable),

@@ -129,6 +129,9 @@ def recorded_setting(notes: str, key: str) -> str | None:
 def setting_mismatches(case_id: str, scorer: str, entry: dict, recorded_notes: str) -> list[str]:
     """Where the scored file was made under settings other than the thresholds file now asks for."""
     problems = []
+    for key, fixed in orchestrator.fixed_settings(scorer).items():
+        if recorded_setting(recorded_notes, key) != fixed:
+            problems.append(f"{case_id}: the run did not apply {key}={fixed}")
     for key, default in scorer_setting_names(scorer):
         wanted, recorded = str(entry.get(key, default)), recorded_setting(recorded_notes, key)
         if recorded != wanted:
@@ -138,7 +141,10 @@ def setting_mismatches(case_id: str, scorer: str, entry: dict, recorded_notes: s
 
 def _derived_notes(case, entry: dict, recorded_notes: str, summary: dict) -> str:
     scorer = CASE_RUNNERS[case.case_id].scorer
-    settings = ", ".join(f"{key}={entry.get(key, default)}" for key, default in scorer_setting_names(scorer))
+    settings = ", ".join(
+        [f"{key}={entry.get(key, default)}" for key, default in scorer_setting_names(scorer)]
+        + [f"{key}={value}" for key, value in orchestrator.fixed_settings(scorer).items()]
+    )
     saved = next((part for part in recorded_notes.split("; ") if part.startswith("scored the saved replies of")), "")
     return "; ".join(part for part in (settings, saved, summary.get("notes", "")) if part)
 
@@ -147,7 +153,7 @@ def _case_result(case, entry: dict, recorded: dict, summary: dict, notes: str) -
     return build_case_result(
         case,
         score=summary["score"],
-        n_prompts=recorded["n_prompts"],
+        n_prompts=recorded["n_prompts"] - summary.get("n_excluded_by_design", 0),
         n_scored=summary["n_scored"],
         threshold=entry["threshold"],
         min_scored=entry["min_scored"],

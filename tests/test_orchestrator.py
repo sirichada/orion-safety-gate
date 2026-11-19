@@ -643,3 +643,19 @@ def test_th_knowledge_is_generated_then_scored_by_the_real_scorer(tmp_path, monk
     assert result["scoring_method"] == "letter_match" and result["status"] == "pass"
     assert "2/4 replies unparsable" in result["notes"]
     assert result["per_language"] is None
+
+
+def lyric_reply():
+    return {**ok("la la la la la la la la la la " * 6), "tags": ["lyrics", "hash_check"]}
+
+
+def test_lyrics_replies_leave_the_prompt_count_and_the_exclusion_ceiling_alone(tmp_path):
+    write_replies(tmp_path, "over_refusal", [ok(), ok()])
+    write_replies(tmp_path, "en_text", [ok(), ok(), *[lyric_reply() for _ in range(6)]])
+    config = {"cases": {"en_integrity": {"threshold": 0, "min_scored": 1, "max_excluded_fraction": 0.0}}}
+    result = run_case(EN_INTEGRITY, tmp_path, [], config, run_stage=IntegrityStages(), timestamp="t")
+    assert result["n_prompts"] == 4 and result["n_scored"] == 4
+    assert result["n_excluded"] == 0 and result["excluded_fraction"] == 0
+    assert result["status"] == "pass" and result["score"] == 1.0
+    assert "6 replies not scored (lyrics_repeat_by_design)" in result["notes"]
+    assert "excluded_tags=lyrics" in result["notes"]

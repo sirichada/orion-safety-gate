@@ -14,6 +14,16 @@ SRC = REPO_ROOT / "data" / "en-text" / "harmbench_behaviors_text_all.csv"
 DST = REPO_ROOT / "data" / "prompt-sets" / "en_text.jsonl"
 
 
+def parse_tags(raw: str | None) -> list[str]:
+    return [tag.strip() for tag in (raw or "").split(",") if tag.strip()]
+
+
+def behavior_tags() -> dict[str, list[str]]:
+    """Prompt id -> HarmBench tags, read from the source CSV."""
+    with open(SRC, newline="", encoding="utf-8") as f:
+        return {f"harmbench_{row['BehaviorID']}": parse_tags(row["Tags"]) for row in csv.DictReader(f)}
+
+
 def load():
     with open(SRC, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -29,6 +39,7 @@ def load():
                 "source_benchmark": "harmbench",
                 "native_category": row["SemanticCategory"],
                 "functional_category": row["FunctionalCategory"],
+                "tags": parse_tags(row["Tags"]),
                 "context": context,
                 "model_input": model_input,
             }

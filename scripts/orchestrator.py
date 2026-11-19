@@ -320,6 +320,11 @@ def run_case(
     return result(summary["score"], summary["n_scored"], summary.get("notes", ""), runner.scoring_method)
 
 
+def fixed_settings(scorer: str) -> dict:
+    """Scorer settings fixed in code rather than set by the thresholds file."""
+    return getattr(INTEGRITY_SCORERS.get(scorer), "FIXED_SETTINGS", {})
+
+
 def run_derived_case(
     case: CaseSpec,
     run_dir: Path,
@@ -392,6 +397,8 @@ def run_derived_case(
         raise SuiteError(f"{case.case_id}: scoring exited with code {code}")
 
     summary = _aggregate(runner.scorer, read_jsonl(scored))
+    # Replies left out by design are not part of the case, so they neither count as prompts nor as exclusions.
+    n_prompts -= summary.get("n_excluded_by_design", 0)
     generation_report["n_excluded"] = summary.get("n_generation_failed")
     generation_report["n_no_answer"] = sum(
         1 for path in existing.values() for r in read_jsonl(path) if r.get("no_answer")
@@ -403,6 +410,7 @@ def run_derived_case(
             ", ".join(
                 [f"line_rule={line_rule}", f"share_threshold={share_threshold}"]
                 + [f"{key}={value}" for key, _flag, value in extra_settings]
+                + [f"{key}={value}" for key, value in fixed_settings(runner.scorer).items()]
             ),
             f"scored the saved replies of {hashes}",
             summary.get("notes", ""),

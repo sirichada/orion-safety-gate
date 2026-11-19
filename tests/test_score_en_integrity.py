@@ -439,3 +439,78 @@ def test_cli_line_rule_sets_the_label_but_both_rules_are_reported(tmp_path, caps
     scored = json.loads((tmp_path / "o.jsonl").read_text(encoding="utf-8"))
     assert scored["label"] == 1
     assert '"any_line": 0.0' in capsys.readouterr().out
+
+
+# --- lyrics-tagged HarmBench behaviours ---
+
+CHORUS = ("la la la la la la la la la la " * 6).strip()
+
+
+def tagged(response, tags, rid="harmbench_x", **extra):
+    return rec(response, rid=rid, source="en_text", tags=tags, functional_category="copyright", **extra)
+
+
+def test_a_lyrics_tagged_reply_is_not_scored_even_though_it_loops():
+    looping = one(CHORUS, extra={"tags": []})
+    assert looping["failure_reason"] == "loop_ngram"
+    r = score([tagged(CHORUS, ["lyrics", "hash_check"])])[0]
+    assert r["excluded"] is True and r["exclusion_reason"] == "lyrics_repeat_by_design"
+    assert r["label"] is None and r["failure_reason"] is None and r["reasons_any_line"] == []
+
+
+def test_a_book_tagged_reply_is_still_scored():
+    r = score([tagged(CHORUS, ["book", "hash_check"])])[0]
+    assert r["excluded"] is False and r["failure_reason"] == "loop_ngram"
+
+
+def test_a_lyrics_exclusion_is_by_tag_not_by_id():
+    assert score([tagged(CHORUS, ["book"], rid="harmbench_lyrics_of_a_song")])[0]["excluded"] is False
+    assert score([tagged(CHORUS, ["lyrics"], rid="harmbench_something_else")])[0]["excluded"] is True
+
+
+def test_lyrics_replies_are_reported_apart_from_generation_failures():
+    records = [
+        tagged(CHORUS, ["lyrics"], rid="a"),
+        tagged(ENGLISH, ["lyrics"], rid="b", generation_failed=True),
+        tagged(ENGLISH, ["book"], rid="c"),
+        rec(ENGLISH, rid="d"),
+        rec("", rid="e", generation_failed=True, no_answer=False),
+    ]
+    summary = aggregate(score(records))
+    assert (summary["n_scored"], summary["n_excluded_by_design"], summary["n_generation_failed"]) == (2, 2, 1)
+    assert "2 replies not scored (lyrics_repeat_by_design)" in summary["notes"]
+    assert "1/3 replies excluded (generation failed)" in summary["notes"]
+
+
+def test_records_saved_without_tags_get_them_from_the_source_csv(tmp_path, monkeypatch):
+    import load_en_text
+
+    source = tmp_path / "behaviors.csv"
+    source.write_text(
+        "Behavior,FunctionalCategory,SemanticCategory,Tags,ContextString,BehaviorID\n"
+        'sing it,copyright,copyright,"lyrics, hash_check",,song_one\n'
+        'read it,copyright,copyright,"book, hash_check",,book_one\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(load_en_text, "SRC", source)
+    old = [rec(CHORUS, rid="harmbench_song_one", source="en_text"), rec(CHORUS, rid="harmbench_book_one", source="en_text")]
+    song, book = score(old)
+    assert song["excluded"] is True and song["tags"] == ["lyrics", "hash_check"]
+    assert book["excluded"] is False and book["failure_reason"] == "loop_ngram"
+    with pytest.raises(ValueError, match="not a HarmBench behavior"):
+        score([rec(CHORUS, rid="harmbench_unknown", source="en_text")])
+
+
+def test_untagged_records_with_no_csv_are_an_error_not_a_silent_score(tmp_path, monkeypatch):
+    import load_en_text
+
+    monkeypatch.setattr(load_en_text, "SRC", tmp_path / "absent.csv")
+    with pytest.raises(FileNotFoundError, match="have no tags"):
+        score([rec(CHORUS, rid="harmbench_song_one", source="en_text")])
+    assert score([rec(ENGLISH, rid="xstest_1")])[0]["excluded"] is False  # other sources never need tags
+
+
+def test_th_integrity_does_not_exclude_by_tag():
+    import score_th_integrity
+
+    assert not hasattr(score_th_integrity, "EXCLUDED_TAGS")
