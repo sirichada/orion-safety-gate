@@ -614,7 +614,7 @@ KNOWLEDGE_THRESHOLDS = {"provisional": True, "cases": {"th_knowledge": {"thresho
 def test_th_knowledge_runner_is_a_generating_case_with_the_letter_match_scorer():
     runner = orchestrator.CASE_RUNNERS["th_knowledge"]
     assert runner.prompts.name == "th_knowledge.jsonl" and runner.scorer == "score_th_knowledge"
-    assert runner.scoring_method == "letter_match" and TH_KNOWLEDGE.implemented and not TH_KNOWLEDGE.derived
+    assert runner.scoring_method == "letter_match_v2" and TH_KNOWLEDGE.implemented and not TH_KNOWLEDGE.derived
 
 
 def test_th_knowledge_is_generated_then_scored_by_the_real_scorer(tmp_path, monkeypatch):

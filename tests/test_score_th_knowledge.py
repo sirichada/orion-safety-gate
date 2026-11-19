@@ -132,7 +132,7 @@ def test_aggregate_counts_unparsable_cut_off_and_rules_separately():
     )
     result = aggregate(records)
     assert result["n_unparsable"] == 2 and result["n_cut_off"] == 1
-    assert result["parse_rule_counts"] == {"bare": 2, "marker": 0, "last_line": 1, "none": 2}
+    assert result["parse_rule_counts"] == {"bare": 2, "marker": 0, "marker_explicit": 0, "last_line": 1, "none": 2}
     assert "2/5 replies unparsable" in result["notes"] and "public on Hugging Face" in result["notes"]
 
 
@@ -163,34 +163,76 @@ def test_aggregate_counts_empty_replies():
 
 
 @pytest.mark.parametrize(
-    "reply, letter",
+    "reply, letter, rule",
     [
-        ("ประโยชน์ต่อสุขภาพทั่วไป ดังนั้น ข้อ B จึงเป็นข้อที่ไม่สามารถอนุมานไดจากข้อความ", "B"),
-        ("ถือเป็นการใช้ภาษาที่ไม่ถูกต้องตามหลักไวยากรณ์ในทางที่กว้างๆ\n\nดังนั้น คำตอบที่ถูกต้องที่สุดคือ ข้อ B", "B"),
-        ("\n\n\\boxed{A}", "A"),
-        ("\n\n\\boxed{B}", "B"),
-        ("Therefore, it is the factor not used in the valuation process.\n\n<|answer|>D</|answer|>", "D"),
-        ("\n\nข้อ D", "D"),
-        ("ผลรวมส่งกลับมาได้ร้อยละ 32 ซึ่งใกล้เคียงกับ 30% มากที่สุดในตัวเลือก จึงตอบ E. 30", "E"),
-        ("คำตอบสุดท้ายคือ ข้อ C", "C"),
-        ("ตอบ A", "A"),
+        ("ประโยชน์ต่อสุขภาพทั่วไป ดังนั้น ข้อ B จึงเป็นข้อที่ไม่สามารถอนุมานไดจากข้อความ", "B", "marker_explicit"),
+        ("ถือเป็นการใช้ภาษาที่ไม่ถูกต้องตามหลักไวยากรณ์ในทางที่กว้างๆ\n\nดังนั้น คำตอบที่ถูกต้องที่สุดคือ ข้อ B", "B", "marker"),
+        ("\n\n\\boxed{A}", "A", "marker_explicit"),
+        ("\n\n\\boxed{B}", "B", "marker_explicit"),
+        ("Therefore, it is the factor not used in the valuation process.\n\n<|answer|>D</|answer|>", "D", "marker_explicit"),
+        ("\n\nข้อ D", "D", "marker_explicit"),
+        ("ผลรวมส่งกลับมาได้ร้อยละ 32 ซึ่งใกล้เคียงกับ 30% มากที่สุดในตัวเลือก จึงตอบ E. 30", "E", "marker_explicit"),
+        ("คำตอบสุดท้ายคือ ข้อ C", "C", "marker"),
+        ("ตอบ A", "A", "marker_explicit"),
+        ("ข้อ C ถูกต้อง", "C", "marker_explicit"),
     ],
 )
-def test_boxed_tagged_and_thai_markers_are_read(reply, letter):
-    assert extract_letter(reply) == (letter, "marker")
+def test_boxed_tagged_and_thai_markers_are_read(reply, letter, rule):
+    assert extract_letter(reply) == (letter, rule)
 
 
 @pytest.mark.parametrize(
     "reply, letter",
     [
         ("ข้อ A ไม่ถูกต้อง เพราะเหตุผลหนึ่ง\n\\boxed{C}", "C"),
-        ("\\boxed{C} แต่เมื่อพิจารณาอีกครั้ง ข้อ A", "A"),
+        ("\\boxed{A} แล้วเปลี่ยนใจ <|answer|>C</|answer|>", "C"),
+        ("<|answer|>C</|answer|> แล้วเปลี่ยนใจ \\boxed{A}", "A"),
         ("I first said A. then <|answer|>B</|answer|>", "B"),
-        ("The answer is A.\nข้อ D", "D"),
+        ("answer is B\nthen on reflection\n\\boxed{E}", "E"),
     ],
 )
-def test_the_last_explicit_marker_wins_not_the_first_letter(reply, letter):
+def test_the_last_strong_marker_wins_not_the_first_letter(reply, letter):
     assert extract_letter(reply)[0] == letter
+
+
+@pytest.mark.parametrize(
+    "reply, letter",
+    [
+        ("The answer is B.\n\nตัวเลือก:\nข้อ A: 10\nข้อ B: 20\nข้อ C: 30", "B"),
+        ("\\boxed{B}\n\nเหตุผล: ข้อ A และ ข้อ C ไม่ตรงกับโจทย์", "B"),
+        ("<|answer|>B</|answer|> ซึ่งต่างจากข้อ E", "B"),
+        ("คำตอบคือ ข้อ C เพราะ ข้อ D ไม่ถูกต้อง", "C"),
+        ("The answer is A.\nข้อ D", "A"),
+    ],
+)
+def test_a_strong_marker_beats_an_option_mentioned_after_it(reply, letter):
+    assert extract_letter(reply)[0] == letter
+
+
+@pytest.mark.parametrize(
+    "reply, letter",
+    [
+        ("ข้อ A ผิด ข้อ B ผิด ข้อ C ถูกต้อง ข้อ D ผิด", "C"),
+        ("ข้อ A ผิด เพราะไม่ตรงกับโจทย์ ดังนั้น ข้อ D จึงเป็นคำตอบ", "D"),
+        ("ข้อ A ไม่ถูกต้อง เพราะเหตุผลหนึ่ง", None),
+        ("ตอบ A ก่อน แต่ตรวจสอบแล้วได้ C", None),
+        ("ข้อ A ผิด ข้อ B ผิด", None),
+    ],
+)
+def test_a_bare_thai_option_mention_counts_only_at_the_end_or_before_a_conclusion(reply, letter):
+    assert extract_letter(reply)[0] == letter
+
+
+def test_an_answer_outside_the_last_300_characters_is_not_read_when_an_option_mention_is_inside():
+    long_tail = "เหตุผลประกอบการพิจารณา " * 20
+    assert len(long_tail) > s.MARKER_WINDOW_CHARS
+    assert extract_letter("\\boxed{B}\n" + long_tail + "ข้อ A ไม่เกี่ยวข้อง") == (None, "none")
+    assert extract_letter("คำตอบคือ B\n" + long_tail + "ข้อ C ถูกต้อง") == ("C", "marker_explicit")
+
+
+def test_scoring_method_names_the_parser_version():
+    assert s.SCORING_METHOD == "letter_match_v2"
+    assert one("\\boxed{C}")["scoring_method"] == "letter_match_v2"
 
 
 @pytest.mark.parametrize(

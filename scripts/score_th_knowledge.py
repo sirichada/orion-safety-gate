@@ -8,10 +8,14 @@ aggregate with per-exam rates and their macro mean.
 The reply's letter is taken by the first rule that fires, on the reply content only:
 - bare: the whole reply is one letter A-E, ignoring emphasis marks, brackets, a leading
   "Answer:" or "คำตอบ" label and trailing punctuation.
-- marker: the last explicit answer marker in the final 300 characters followed by a letter A-E:
-  "answer is" / "answer:" / "คำตอบ(ที่ถูกต้อง|สุดท้าย)(ที่สุด)คือ (ข้อ)", "ข้อ X", "ตอบ X",
-  a LaTeX boxed{X} and "<|answer|>X</|answer|>". A lowercase letter counts only after an English
-  marker and only when no word follows it; the Thai and boxed/tagged forms take capitals only.
+- marker: the last "answer is" / "answer:" / "คำตอบ(ที่ถูกต้อง|สุดท้าย)(ที่สุด)คือ (ข้อ)" style marker
+  in the final 300 characters followed by a letter A-E. A lowercase letter counts only when no
+  word follows it.
+- marker_explicit: a LaTeX boxed{X} or "<|answer|>X</|answer|>" in the final 300 characters (the
+  last of these and of the markers above wins, and any of them outranks the weak forms); failing
+  those, the last Thai "ข้อ X" / "ตอบ X" in that window, but only when the reply ends within 12
+  non-Thai characters of it or a conclusion phrase (จึงเป็น, เป็นคำตอบ, ถูกต้อง, ถูก) follows the
+  letter directly. These forms take capital letters only.
 - last_line: the last non-empty line is a lone letter ("C", "**C**", "(C)", "C.", "C)"), or an
   option echo ("C. 12.5") when it is the only option-formatted line in the reply.
 A letter elsewhere in the text is never taken. A reply no rule fires on is unparsable, and an
@@ -35,10 +39,10 @@ from pathlib import Path
 
 from integrity_checks import is_excluded
 
-SCORING_METHOD = "letter_match"
+SCORING_METHOD = "letter_match_v2"
 LETTERS = "ABCDE"
 EXAMS = ("onet", "ic", "tgat", "tpat1", "a_level")
-RULES = ("bare", "marker", "last_line")
+RULES = ("bare", "marker", "marker_explicit", "last_line")
 MARKER_WINDOW_CHARS = 300
 DATASET_REVISION = "d78aef04ea3cc5095545e6951cb39e17c64e26a1"
 
@@ -51,15 +55,19 @@ _MARKER = re.compile(
     re.IGNORECASE,
 )
 # Capital letters only: a lowercase letter after these is a variable or ordinary text.
-_EXPLICIT_UPPER = tuple(
+_STRONG_UPPER = tuple(
     re.compile(pattern)
     for pattern in (
         r"\\boxed\{\s*([A-E])\s*\}",
         r"<\|answer\|>\s*([A-E])\s*</\|answer\|>",
-        r"ข้อ\s*([A-E])(?![A-Za-z0-9])",
-        r"ตอบ\s*([A-E])(?![A-Za-z0-9])",
     )
 )
+# An option mentioned in running text ("ข้อ A ผิด", "ตอบ A ก่อน แต่ ...") is not an answer, so these count only
+# when the reply ends there or a conclusion phrase follows the letter directly.
+_WEAK_UPPER = tuple(re.compile(pattern) for pattern in (r"ข้อ\s*([A-E])(?![A-Za-z0-9])", r"ตอบ\s*([A-E])(?![A-Za-z0-9])"))
+_CONCLUSION = re.compile(r"\s*(?:จึงเป็น|เป็นคำตอบ|ถูกต้อง|ถูก)")
+_THAI_LETTER = re.compile(r"[฀-๿]")
+WEAK_TRAILER_CHARS = 12
 _LONE_LETTER = re.compile(r"[\s*_`(\[]*([A-Ea-e])[\s*_`)\].]*")
 _OPTION_LINE_UPPER = re.compile(r"[\s*_`(\[]*([A-E])[.)]\s+\S")
 
@@ -75,16 +83,27 @@ def extract_letter(reply: str) -> tuple[str | None, str]:
         return m.group(1).upper(), "bare"
 
     tail = text[-MARKER_WINDOW_CHARS:]
-    hits = []
+    strong = []
     for m in _MARKER.finditer(tail):
         letter = m.group(1)
         if letter.islower() and re.match(r"\s*[A-Za-z]", tail[m.end():]):
             continue
-        hits.append((m.start(1), letter.upper()))
-    for pattern in _EXPLICIT_UPPER:
-        hits.extend((m.start(1), m.group(1)) for m in pattern.finditer(tail))
-    if hits:
-        return max(hits)[1], "marker"
+        strong.append((m.start(1), letter.upper(), "marker"))
+    for pattern in _STRONG_UPPER:
+        strong.extend((m.start(1), m.group(1), "marker_explicit") for m in pattern.finditer(tail))
+    if strong:
+        _, letter, rule = max(strong)
+        return letter, rule
+
+    weak = []
+    for pattern in _WEAK_UPPER:
+        for m in pattern.finditer(tail):
+            rest = tail[m.end():]
+            at_end = len(rest.strip()) <= WEAK_TRAILER_CHARS and not _THAI_LETTER.search(rest)
+            if at_end or _CONCLUSION.match(rest):
+                weak.append((m.start(1), m.group(1)))
+    if weak:
+        return max(weak)[1], "marker_explicit"
 
     lines = [line for line in text.splitlines() if line.strip()]
     last = lines[-1]
