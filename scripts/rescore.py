@@ -40,7 +40,7 @@ from orchestrator import (
     run_derived_case,
     run_subprocess,
 )
-from verdict import build_case_result, build_verdict
+from verdict import build_case_result, build_verdict, result_options, threshold_entry_problems
 
 DEFAULT_THRESHOLDS = REPO_ROOT / "config" / "thresholds.json"
 VERDICT_NAME = "verdict.json"
@@ -108,6 +108,8 @@ def threshold_problems(selection: Selection, thresholds: dict) -> list[str]:
         entry = thresholds.get("cases", {}).get(case.case_id)
         if entry is None or "threshold" not in entry or "min_scored" not in entry:
             problems.append(f"{case.case_id}: thresholds config needs 'threshold' and 'min_scored'")
+        elif threshold_entry_problems(case.case_id, entry):
+            problems.extend(threshold_entry_problems(case.case_id, entry))
         elif CASE_RUNNERS[case.case_id].scorer in INTEGRITY_SCORERS:
             problems.extend(integrity_config_problems(case.case_id, entry, CASE_RUNNERS[case.case_id].scorer))
     return problems
@@ -165,6 +167,7 @@ def _case_result(case, entry: dict, recorded: dict, summary: dict, notes: str, *
         n_excluded=summary.get("n_generation_failed"),
         n_no_answer=recorded.get("n_no_answer"),
         max_excluded_fraction=entry.get("max_excluded_fraction"),
+        **result_options(entry),
         max_new_tokens=recorded.get("max_new_tokens"),
         cost_thb=recorded.get("cost_thb"),
     )
@@ -183,6 +186,7 @@ def _unscored_result(case, entry: dict, recorded: dict) -> dict:
         notes=recorded.get("notes", ""),
         n_truncated_inputs=recorded.get("n_truncated_inputs"),
         max_excluded_fraction=entry.get("max_excluded_fraction"),
+        **result_options(entry),
         max_new_tokens=recorded.get("max_new_tokens"),
     )
 

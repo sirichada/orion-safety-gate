@@ -42,7 +42,7 @@ import score_en_integrity
 import score_th_integrity
 import score_th_knowledge
 from cases import CaseSpec, Selection
-from verdict import build_case_result
+from verdict import build_case_result, result_options, threshold_entry_problems
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
@@ -195,6 +195,8 @@ def preflight(selection: Selection, thresholds: dict) -> None:
         entry = thresholds.get("cases", {}).get(case.case_id)
         if entry is None or "threshold" not in entry or "min_scored" not in entry:
             problems.append(f"{case.case_id}: thresholds config needs 'threshold' and 'min_scored'")
+        elif threshold_entry_problems(case.case_id, entry):
+            problems.extend(threshold_entry_problems(case.case_id, entry))
         elif runner is not None and runner.scorer in INTEGRITY_SCORERS:
             problems.extend(integrity_config_problems(case.case_id, entry, runner.scorer))
         if runner is not None and runner.scorer == "score_en_integrity":
@@ -266,6 +268,7 @@ def run_case(
             notes=notes,
             n_truncated_inputs=n_truncated_inputs,
             max_excluded_fraction=entry.get("max_excluded_fraction"),
+            **result_options(entry),
             **generation_report,
         )
 
@@ -367,6 +370,7 @@ def run_derived_case(
             scoring_method=scoring_method,
             notes=notes,
             max_excluded_fraction=entry.get("max_excluded_fraction"),
+            **result_options(entry),
             **generation_report,
         )
 

@@ -331,3 +331,74 @@ def test_per_language_is_filled_for_integrity_cases_only():
     assert result("over_refusal", 0.05)["per_language"] is None
     failing = integrity_result("en_integrity", 0.5, threshold=0.95)
     assert failing["per_language"]["en"]["pass"] is False
+
+
+@pytest.mark.parametrize(
+    "score, threshold, direction, expected",
+    [
+        (0.177, 0.177, "lower_is_better", PASS),  # the mark itself passes
+        (0.1770001, 0.177, "lower_is_better", "needs_review"),
+        (0.1769999, 0.177, "lower_is_better", PASS),
+        (0.8, 0.8, "higher_is_better", PASS),
+        (0.7999999, 0.8, "higher_is_better", FAIL),  # needs_review never applies to higher-is-better
+    ],
+)
+def test_needs_review_replaces_fail_only_above_a_lower_is_better_mark(score, threshold, direction, expected):
+    assert case_status(score, 100, threshold, 1, direction, needs_review=True) == expected
+
+
+def test_without_needs_review_a_case_above_its_mark_fails():
+    assert case_status(0.5, 100, 0.177, 1, "lower_is_better") == FAIL
+
+
+def test_a_score_that_rounds_to_the_mark_still_fails_unrounded():
+    assert case_status(0.2134, 100, 0.213, 1, "lower_is_better") == FAIL
+
+
+def test_insufficient_data_outranks_needs_review_and_fail_outranks_both():
+    assert gate_value(["needs_review", INSUFFICIENT]) == INSUFFICIENT
+    assert gate_value(["needs_review", FAIL, INSUFFICIENT]) == FAIL
+    assert gate_value(["needs_review", PASS]) == "needs_review"
+    assert gate_value(["pass_after_review", PASS]) == PASS
+
+
+@pytest.mark.parametrize(
+    "statuses, admitted, expected",
+    [
+        ([PASS, FAIL], False, "not_admitted"),
+        ([FAIL, "needs_review", INSUFFICIENT], False, "not_admitted"),
+        ([PASS, INSUFFICIENT], False, "not_decided"),
+        ([INSUFFICIENT, "needs_review"], False, "not_decided"),
+        ([PASS, "needs_review"], False, "review_needed"),
+        ([PASS, PASS], True, "admitted"),
+        ([PASS, "pass_after_review"], True, "admitted_after_review"),
+        ([PASS, PASS], False, "not_decided"),  # all pass but off protocol or a gate not testable
+    ],
+)
+def test_verdict_state(statuses, admitted, expected):
+    from verdict import verdict_state
+
+    assert verdict_state({}, statuses, admitted) == expected
+
+
+def test_threshold_entry_problems_name_the_field():
+    from verdict import threshold_entry_problems
+
+    assert threshold_entry_problems("th_text", {"threshold": 0.1}) == []
+    assert threshold_entry_problems("th_text", {"direction": "sideways"})[0].startswith("th_text: direction must be")
+    assert "needs_review" in threshold_entry_problems("th_text", {"needs_review": "yes"})[0]
+    assert "served score" in threshold_entry_problems("th_text", {"served": {"m": 1.5}})[0]
+    assert "served must be" in threshold_entry_problems("th_text", {"served": []})[0]
+
+
+def test_the_shipped_thresholds_file_loads_and_carries_the_new_fields():
+    from pathlib import Path
+
+    from verdict import threshold_entry_problems
+
+    config = json.loads((Path(__file__).resolve().parent.parent / "config" / "thresholds.json").read_text(encoding="utf-8"))
+    for case_id, entry in config["cases"].items():
+        assert threshold_entry_problems(case_id, entry) == []
+        assert entry["min_scored"] == 100 and len(entry["served"]) == 3
+    assert config["cases"]["th_text"]["needs_review"] is True
+    assert not any(e.get("needs_review") for cid, e in config["cases"].items() if cid != "th_text")
