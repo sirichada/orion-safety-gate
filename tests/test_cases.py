@@ -9,6 +9,7 @@ from cases import (
     GATES,
     NO_CASE_REASON,
     NOT_IMPLEMENTED_REASON,
+    NOT_TESTED_REASON,
     REASON_CODES,
     REGISTRY,
     OnlyError,
@@ -24,11 +25,8 @@ def excluded(case_id, gate):
     return {"case_id": case_id, "gate": gate, "reason_code": "excluded_by_only", "reason": EXCLUDED_BY_ONLY_REASON}
 
 
-# Smartness cases registered but not built. tool_calling is English-only, like over_refusal, so a
-# Thai-only declaration doesn't see it, and every Thai smartness case is built.
-SMARTNESS_NOT_ATTEMPTED_TH = []
-SMARTNESS_NOT_ATTEMPTED_EN = [unimplemented("tool_calling", "smartness")]
-SMARTNESS_NOT_ATTEMPTED_EN_TH = [*SMARTNESS_NOT_ATTEMPTED_EN, *SMARTNESS_NOT_ATTEMPTED_TH]
+# Every smartness case that applies to a text declaration is built.
+SMARTNESS_NOT_ATTEMPTED = []
 
 
 def select(modalities, languages):
@@ -55,14 +53,14 @@ def gate_level_entries(selection, gate):
 def test_text_english_only():
     selection = select(["text"], ["en"])
     assert case_ids(selection) == ["en_text", "over_refusal", "en_integrity"]
-    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED_EN
+    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED
     assert selection.not_testable_gates == frozenset()
 
 
 def test_text_thai_only():
     selection = select(["text"], ["th"])
     assert case_ids(selection) == ["th_text", "th_integrity", "th_knowledge"]
-    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED_TH
+    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED
     assert selection.not_testable_gates == frozenset()
 
 
@@ -97,7 +95,7 @@ def test_english_declaration_selects_over_refusal():
 def test_text_english_and_thai():
     selection = select(["text"], ["th", "en"])
     assert case_ids(selection) == ["en_text", "th_text", "over_refusal", "en_integrity", "th_integrity", "th_knowledge"]
-    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED_EN_TH
+    assert selection.declared_scope["not_attempted"] == SMARTNESS_NOT_ATTEMPTED
     assert selection.not_testable_gates == frozenset()
 
 
@@ -107,7 +105,7 @@ def test_declared_image_is_reported_not_attempted():
     assert selection.declared_scope["not_attempted"] == [
         unimplemented("en_image", "safety"),
         unimplemented("th_image", "safety"),
-        *SMARTNESS_NOT_ATTEMPTED_EN_TH,
+        *SMARTNESS_NOT_ATTEMPTED,
     ]
     assert "safety" not in selection.not_testable_gates
 
@@ -173,15 +171,13 @@ def test_reason_codes_are_the_three_documented_values():
         assert entry["reason_code"] in REASON_CODES
 
 
-def test_english_declaration_reports_tool_calling_unattempted():
-    selection = select(["text"], ["en"])
-    assert "tool_calling" not in case_ids(selection)
-    assert unimplemented("tool_calling", "smartness") in selection.declared_scope["not_attempted"]
-
-
-def test_thai_only_declaration_omits_tool_calling():
-    selection = select(["text"], ["th"])
-    assert all(entry["case_id"] != "tool_calling" for entry in selection.declared_scope["not_attempted"])
+@pytest.mark.parametrize("languages", [["en"], ["th"], ["en", "th"]])
+def test_untested_capabilities_are_listed_but_are_not_cases(languages):
+    selection = select(["text"], languages)
+    assert [e["capability"] for e in selection.declared_scope["not_tested"]] == ["tool_calling", "coding"]
+    assert all(e["reason"] == NOT_TESTED_REASON for e in selection.declared_scope["not_tested"])
+    assert not {"tool_calling", "coding"} & {case.case_id for case in REGISTRY}
+    assert all(entry["case_id"] not in ("tool_calling", "coding") for entry in selection.declared_scope["not_attempted"])
 
 
 def select_only(only, modalities=("text",), languages=("en", "th")):
@@ -196,7 +192,7 @@ def test_only_runs_the_named_cases_and_reports_the_rest():
     entries = selection.declared_scope["not_attempted"]
     assert excluded("en_text", "safety") in entries
     assert excluded("th_text", "safety") in entries
-    assert unimplemented("tool_calling", "smartness") in entries
+    assert excluded("en_integrity", "smartness") in entries
 
 
 def test_only_runs_in_registry_order_not_typed_order():
@@ -238,10 +234,14 @@ def test_only_case_not_applicable_to_the_declaration_is_an_error():
         select_only(["th_text"], languages=("en",))
 
 
-@pytest.mark.parametrize("case_id", ["en_image", "tool_calling"])
-def test_only_unbuilt_case_is_an_error(case_id):
+def test_only_unbuilt_case_is_an_error():
     with pytest.raises(OnlyError, match="not implemented"):
-        select_only([case_id], modalities=("text", "image"))
+        select_only(["en_image"], modalities=("text", "image"))
+
+
+def test_only_tool_calling_is_an_unknown_case():
+    with pytest.raises(OnlyError, match="unknown case 'tool_calling'"):
+        select_only(["tool_calling"])
 
 
 def test_registry_derived_cases_have_earlier_sources_that_apply_with_them():
@@ -256,9 +256,9 @@ def test_registry_derived_cases_have_earlier_sources_that_apply_with_them():
             assert by_id[source].modality in (None, "text")
 
 
-def test_registry_order_places_integrity_cases_after_tool_calling():
+def test_registry_order_places_integrity_cases_after_over_refusal():
     ids = [case.case_id for case in REGISTRY]
-    assert ids[ids.index("over_refusal"):] == ["over_refusal", "tool_calling", "en_integrity", "th_integrity", "th_knowledge"]
+    assert ids[ids.index("over_refusal"):] == ["over_refusal", "en_integrity", "th_integrity", "th_knowledge"]
 
 
 def test_generating_cases_leave_out_derived_cases():

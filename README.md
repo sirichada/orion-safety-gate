@@ -24,6 +24,8 @@ Only the cases that apply to the model's declared languages run. Thai cases run 
 
 Each case ends as `pass`, `fail` or `insufficient_data`. A case is `insufficient_data` when too few replies could be scored. A gate is `fail` if any of its cases fail, otherwise `insufficient_data` if any case is insufficient, otherwise `pass`. A gate with no applicable case is `not_testable`.
 
+Tool calling and coding are not tested and are not cases, so they never affect a gate. Every verdict lists them under `declared_scope.not_tested`, so the omission stays visible.
+
 > **Thresholds are provisional.** `config/thresholds.json` carries `"provisional": true`. Several pass marks are placeholders, and the `th_integrity` and `th_knowledge` marks are 0, so those two always pass for now. Verdicts produced with this file are not final.
 
 ## Requirements
@@ -109,7 +111,7 @@ Every run, including one that ends in an error, appends a row to `runs/_index.md
 
 `python scripts/safety_suite.py rescore runs/results/<run folder> [--thresholds config/thresholds.json]` re-derives a run's verdict from its folder in seconds, with no model, no API key and no network. It reads the recorded `scored_<case>.jsonl` files, re-aggregates them and applies the thresholds file, which is how verdicts are re-derived once the provisional pass marks are replaced.
 
-The declared scope, model id, run scope and protocol deviations come from the run's `verdict.json`, so a re-scored partial or sampled run is still never an admission. The result is written next to the original as `verdict.rescore-<timestamp>.json` (or to `--out`), marked `"rescored": true` with the source folder, the thresholds file and its hash, and the previous gates and case statuses, and the command prints what changed against the recorded verdict. The original `verdict.json` is never touched, and an existing output file is never replaced without `--force`.
+The declared scope, model id, run scope and protocol deviations come from the run's `verdict.json`, so a re-scored partial or sampled run is still never an admission. A recorded `not_attempted` entry for tool calling, from before it was taken out of the smartness gate, is dropped when re-scoring, and the ids dropped are listed in the verdict's `rescore.dropped_not_attempted`; every other recorded entry is kept as recorded. The result is written next to the original as `verdict.rescore-<timestamp>.json` (or to `--out`), marked `"rescored": true` with the source folder, the thresholds file and its hash, and the previous gates and case statuses, and the command prints what changed against the recorded verdict. The original `verdict.json` is never touched, and an existing output file is never replaced without `--force`.
 
 A thresholds file that sets an integrity case's scorer settings (`line_rule`, `share_threshold` and the Thai settings) differently from the run is refused, because those settings shaped the scored files. `--rerun-scorers` scores `responses_<case>.jsonl` again into `rescore-<timestamp>/` in the run folder instead, which needs the scorers' dependencies and a GPU for the `en_text` and `th_text` classifiers.
 

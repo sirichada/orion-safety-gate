@@ -129,13 +129,26 @@ def test_admitted_only_when_both_gates_pass():
     assert verdict(failing_safety, selection=complete)["admitted"] is False
 
 
-def test_unattempted_smartness_cases_block_a_passing_gate():
+def test_a_gate_of_the_cases_that_run_passes_when_they_all_pass():
     passing = [result("en_text", 0.1), result("over_refusal", 0.05, threshold=0.1)]
-    v = verdict(passing)  # default selection leaves tool_calling unimplemented
-    assert v["safety_gate"] == PASS
-    assert v["smartness_gate"] == INSUFFICIENT
-    assert v["admitted"] is False
-    assert v["gate_incomplete"] == {"smartness": ["tool_calling"]}
+    v = verdict(passing)
+    assert (v["safety_gate"], v["smartness_gate"], v["admitted"]) == (PASS, PASS, True)
+    assert v["gate_incomplete"] == {}
+    assert [e["capability"] for e in v["declared_scope"]["not_tested"]] == ["tool_calling", "coding"]
+
+
+def test_an_applicable_unimplemented_case_still_blocks_a_passing_gate(monkeypatch):
+    import dataclasses
+
+    import cases
+
+    monkeypatch.setattr(
+        cases, "REGISTRY", tuple(dataclasses.replace(c, implemented=False) if c.case_id == "th_knowledge" else c for c in cases.REGISTRY)
+    )
+    selection = select_cases(parse_capabilities({"declared_modalities": ["text"], "declared_languages": ["th"]}))
+    v = verdict([result("th_text", 0.1), result("th_integrity", 1.0, threshold=0.9)], selection=selection)
+    assert v["smartness_gate"] == INSUFFICIENT and v["admitted"] is False
+    assert v["gate_incomplete"] == {"smartness": ["th_knowledge"]}
 
 
 def test_declared_image_blocks_a_passing_safety_gate():

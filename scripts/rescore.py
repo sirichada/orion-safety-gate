@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import orchestrator
-from cases import REGISTRY, Selection
+from cases import NOT_TESTED_REASON, REGISTRY, UNTESTED_CAPABILITIES, Selection
 from orchestrator import (
     CASE_RUNNERS,
     EXTRA_INTEGRITY_SETTINGS,
@@ -74,13 +74,26 @@ def load_recorded_verdict(run_dir: Path) -> dict:
     return verdict
 
 
+def current_scope(recorded_scope: dict) -> tuple[dict, list[str]]:
+    """The recorded scope under today's rule that untested capabilities are not cases.
+
+    A not_attempted entry for one (tool_calling was once a smartness case) is dropped so it no longer
+    holds a gate at insufficient_data; the ids dropped are returned. Every other entry is kept as recorded.
+    """
+    kept = [e for e in recorded_scope["not_attempted"] if e["case_id"] not in UNTESTED_CAPABILITIES]
+    dropped = [e["case_id"] for e in recorded_scope["not_attempted"] if e["case_id"] in UNTESTED_CAPABILITIES]
+    scope = {**recorded_scope, "not_attempted": kept}
+    scope["not_tested"] = [{"capability": name, "reason": NOT_TESTED_REASON} for name in UNTESTED_CAPABILITIES]
+    return scope, dropped
+
+
 def selection_from_verdict(verdict: dict) -> Selection:
     """The run's own selection, not today's: a case that was unimplemented or left out then stays so."""
     by_id = {case.case_id: case for case in REGISTRY}
     unknown = [case_id for case_id in verdict["cases_run"] if case_id not in by_id]
     if unknown:
         raise SuiteError(f"the run's verdict names cases this suite no longer knows: {', '.join(unknown)}")
-    scope = verdict["declared_scope"]
+    scope, _ = current_scope(verdict["declared_scope"])
     return Selection(
         cases=tuple(by_id[case_id] for case_id in verdict["cases_run"]),
         not_testable_gates=frozenset(entry["gate"] for entry in scope["not_attempted"] if entry["case_id"] is None),
@@ -280,6 +293,7 @@ def rescore_run(
         "source_verdict_sha256": hashlib.sha256((run_dir / VERDICT_NAME).read_bytes()).hexdigest(),
         "thresholds_file": str(Path(thresholds_path).resolve()),
         "thresholds_sha256": run_args["thresholds_sha256"],
+        "dropped_not_attempted": current_scope(old["declared_scope"])[1],
         "level": "rerun_scorers" if rerun_scorers else "recorded_scores",
         "rescored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "previous": {

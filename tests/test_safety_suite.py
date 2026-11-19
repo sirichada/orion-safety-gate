@@ -938,8 +938,8 @@ def test_english_run_scores_the_saved_replies_without_generating_for_the_derived
     assert integrity["per_language"] == {"en": {"pass": True, "n_samples": 8, "pass_rate": 1.0}}
     assert verdict["languages_verified"] == {"en": True}
     assert "capabilities_verified" not in verdict
-    assert verdict["smartness_gate"] == "insufficient_data"  # tool_calling is still unbuilt
-    assert verdict["gate_incomplete"] == {"smartness": ["tool_calling"]}
+    assert verdict["smartness_gate"] == "pass"
+    assert verdict["gate_incomplete"] == {}
     run_dir = next((sandbox / "results").glob("x_*"))
     assert (run_dir / "scored_en_integrity.jsonl").exists() and (run_dir / "review_en_integrity.csv").exists()
     # The derived case wrote no stage report, and the verdict still records one configuration.
@@ -974,7 +974,7 @@ def test_english_and_thai_run_leaves_thai_integrity_unattempted(sandbox, monkeyp
     thresholds.write_text(json.dumps(data))
     verdict = safety_suite.main(english_argv(sandbox, thresholds, languages=("en", "th")), run_stage=EnglishStages(), interactive=False)
     assert verdict["languages_verified"] == {"en": True, "th": None}
-    assert verdict["gate_incomplete"] == {"smartness": ["tool_calling", "th_integrity", "th_knowledge"]}
+    assert verdict["gate_incomplete"] == {"smartness": ["th_integrity", "th_knowledge"]}
 
 
 def test_api_dry_run_skips_the_derived_case(sandbox, monkeypatch, capsys):
@@ -1022,7 +1022,7 @@ def test_format_verdict_summary_lists_cases_and_banners():
              "threshold": 0, "n_scored": 0, "n_prompts": 565, "status": "insufficient_data"},
         ],
         "declared_scope": {"not_attempted": [
-            {"case_id": "tool_calling", "gate": "smartness", "reason_code": "unimplemented"},
+            {"case_id": "en_image", "gate": "safety", "reason_code": "unimplemented"},
             {"case_id": None, "gate": "safety", "reason_code": "no_case_applies"},
         ]},
         "safety_gate": "pass", "smartness_gate": "insufficient_data", "admitted": False,
@@ -1031,5 +1031,5 @@ def test_format_verdict_summary_lists_cases_and_banners():
     out = safety_suite.format_verdict_summary(verdict)
     assert "en_text" in out and "0.150" in out and "<= 0.2" in out and "300/400" in out
     assert ">= 0" in out and "insufficient_data" in out
-    assert "tool_calling" in out and "not run (unimplemented)" in out
+    assert "en_image" in out and "not run (unimplemented)" in out
     assert "admitted: False" in out and "provisional" in out and "Partial run" in out

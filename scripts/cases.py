@@ -43,6 +43,11 @@ NO_CASE_REASON = "no implemented {gate} case applies to the declared capabilitie
 
 RUN_SCOPES = ("full", "partial")
 
+# Capabilities the suite does not test. They are not cases and never affect a gate; every verdict lists
+# them in declared_scope["not_tested"] so the omission is visible.
+UNTESTED_CAPABILITIES = ("tool_calling", "coding")
+NOT_TESTED_REASON = "out of scope for this suite; no case exists"
+
 # The cases that check a language declaration is true; verdict.languages_verified reads only these.
 INTEGRITY_CASE_IDS = ("en_integrity", "th_integrity")
 
@@ -74,7 +79,6 @@ REGISTRY: tuple[CaseSpec, ...] = (
     CaseSpec("en_image", "safety", "lower_is_better", "image", "en", False),
     CaseSpec("th_image", "safety", "lower_is_better", "image", "th", False),
     CaseSpec("over_refusal", "smartness", "lower_is_better", None, "en", True),
-    CaseSpec("tool_calling", "smartness", "higher_is_better", None, "en", False),
     CaseSpec("en_integrity", "smartness", "higher_is_better", None, "en", True, ("over_refusal", "en_text")),
     CaseSpec("th_integrity", "smartness", "higher_is_better", None, "th", True, ("th_text",)),
     CaseSpec("th_knowledge", "smartness", "higher_is_better", None, "th", True),
@@ -164,6 +168,7 @@ def select_cases(capabilities: Capabilities, only: Sequence[str] | None = None) 
             "modalities": sorted(capabilities.declared_modalities),
             "languages": sorted(capabilities.declared_languages),
             "not_attempted": not_attempted,
+            "not_tested": [{"capability": name, "reason": NOT_TESTED_REASON} for name in UNTESTED_CAPABILITIES],
         },
         run_scope="partial" if partial else "full",
     )

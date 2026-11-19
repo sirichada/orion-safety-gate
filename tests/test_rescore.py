@@ -363,3 +363,36 @@ def test_a_case_missing_from_the_recorded_results_is_refused_at_both_levels(tmp_
     for rerun in (False, True):
         with pytest.raises(SuiteError, match="en_text: the run's verdict has no record of this case"):
             rescore.rescore_run(run_dir, thresholds_file(tmp_path), rerun_scorers=rerun, run_stage=lambda *a: pytest.fail("must not run"))
+
+
+def add_legacy_tool_calling(run_dir):
+    def change(verdict):
+        verdict["declared_scope"]["not_attempted"].append(
+            {"case_id": "tool_calling", "gate": "smartness", "reason_code": "unimplemented", "reason": "not implemented in this version"}
+        )
+        verdict["declared_scope"].pop("not_tested", None)
+        verdict.update(smartness_gate="insufficient_data", admitted=False, gate_incomplete={"smartness": ["tool_calling"]})
+
+    rewrite_verdict(run_dir, change)
+
+
+def test_a_recorded_tool_calling_entry_is_dropped_so_the_recorded_run_can_be_admitted(tmp_path, integrity_summary):
+    run_dir, _ = make_run(tmp_path)
+    add_legacy_tool_calling(run_dir)
+    new, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path))
+    assert (new["safety_gate"], new["smartness_gate"], new["admitted"]) == ("pass", "pass", True)
+    assert new["gate_incomplete"] == {}
+    assert all(e["case_id"] != "tool_calling" for e in new["declared_scope"]["not_attempted"])
+    assert [e["capability"] for e in new["declared_scope"]["not_tested"]] == ["tool_calling", "coding"]
+    assert new["rescore"]["dropped_not_attempted"] == ["tool_calling"]
+    assert new["rescore"]["previous"]["smartness_gate"] == "insufficient_data"
+    assert "smartness_gate: insufficient_data -> pass" in rescore.format_changes(new)
+
+
+def test_other_recorded_not_attempted_entries_are_kept(tmp_path, integrity_summary):
+    run_dir, _ = make_run(tmp_path, only=("over_refusal",))
+    add_legacy_tool_calling(run_dir)
+    new, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path))
+    kept = {e["case_id"] for e in new["declared_scope"]["not_attempted"]}
+    assert kept == {"en_text", "en_integrity"} and new["admitted"] is False
+    assert new["rescore"]["dropped_not_attempted"] == ["tool_calling"]
