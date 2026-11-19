@@ -11,6 +11,7 @@ Usage:
     python safety_suite.py run --backend api --max-thb 40 ...    # api runs need a spend limit
     python safety_suite.py run --backend api --dry-run ...       # per-case worst-case/expected THB; no key, no network
     python safety_suite.py run ... --resume runs/results/<run folder>    # continue an interrupted run
+    python safety_suite.py rescore runs/results/<run folder>             # re-derive its verdict offline
 
 In a real terminal, any of --modalities/--languages/--model-id left out is asked for,
 and a summary is shown for confirmation before anything runs (--yes skips the
@@ -33,6 +34,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import rescore
 import run_config
 from cases import REGISTRY, OnlyError, select_cases
 from cli_input import Cancelled, Inputs, QuestionaryAsk, ask_or_fail, no_terminal_error, resolve_inputs
@@ -76,6 +78,22 @@ def parse_only(value: str) -> tuple[str, ...]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
+    rescore = sub.add_parser(
+        "rescore",
+        help="Re-derive a recorded run's verdict from its run folder, with no model and no network",
+    )
+    rescore.add_argument("run_dir", help="A run folder under runs/results/ that holds verdict.json and scored_<case>.jsonl")
+    rescore.add_argument("--thresholds", default=None, help="Thresholds config JSON (default: config/thresholds.json)")
+    rescore.add_argument(
+        "--out", default=None, help="Verdict path (default: verdict.rescore-<timestamp>.json in the run folder; an existing file is never replaced)"
+    )
+    rescore.add_argument(
+        "--rerun-scorers",
+        action="store_true",
+        help="Score responses_<case>.jsonl again instead of reading the recorded scored_<case>.jsonl; "
+        "needs the scorers' dependencies (a GPU for the en_text/th_text classifiers). Scored files go to rescore-<timestamp>/ in the run folder",
+    )
+    rescore.add_argument("--force", action="store_true", help="Let --out replace an existing file")
     run = sub.add_parser("run", help="Run the suite against one candidate model")
     run.add_argument("--model", required=True, help="Base model path/HF repo id, or the API model id with --backend api")
     run.add_argument("--model-id", default=None, help="Stable declared name/version recorded in the verdict")
@@ -161,6 +179,8 @@ def build_parser() -> argparse.ArgumentParser:
 def parse_args(argv: list[str] | None = None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "rescore":
+        return args
     if args.max_consecutive_failures < 1:
         parser.error("--max-consecutive-failures must be >= 1")
     if args.batch_size is None:
@@ -683,6 +703,25 @@ def format_verdict_summary(verdict: dict) -> str:
     return "\n".join(lines)
 
 
+def rescore_command(args, run_stage: RunStage = run_subprocess) -> dict:
+    try:
+        verdict, out = rescore.rescore_run(
+            Path(args.run_dir),
+            Path(args.thresholds) if args.thresholds else rescore.DEFAULT_THRESHOLDS,
+            out=Path(args.out) if args.out else None,
+            rerun_scorers=args.rerun_scorers,
+            force=args.force,
+            run_stage=run_stage,
+        )
+    except SuiteError as e:
+        raise SystemExit(f"Re-score failed, no verdict written: {e}")
+    print(format_verdict_summary(verdict))
+    print(rescore.format_changes(verdict))
+    print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
+    print(f"Re-scored verdict -> {out}")
+    return verdict
+
+
 def read_spent(ledger: Path | None) -> float | None:
     if ledger is None or not ledger.exists():
         return None
@@ -778,6 +817,8 @@ def append_index_row(stamp: str, model_id: str | None, detail: str, outcome: str
 
 def main(argv: list[str] | None = None, run_stage: RunStage = run_subprocess, interactive: bool | None = None, ask_factory=QuestionaryAsk):
     args = parse_args(argv)
+    if args.command == "rescore":
+        return rescore_command(args, run_stage)
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.no_input
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

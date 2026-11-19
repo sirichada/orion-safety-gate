@@ -326,14 +326,20 @@ def run_derived_case(
     thresholds: dict,
     run_stage: RunStage = run_subprocess,
     timestamp: str | None = None,
+    out_dir: Path | None = None,
 ) -> dict:
-    """Scores the saved replies of case.sources; sends nothing to the candidate."""
+    """Scores the saved replies of case.sources; sends nothing to the candidate.
+
+    The scored and review files go to out_dir (default: run_dir); the replies are always read from run_dir.
+    """
     runner = CASE_RUNNERS[case.case_id]
     entry = thresholds["cases"][case.case_id]
     stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
     source_paths = {source: responses_file(Path(run_dir), source).resolve() for source in case.sources}
-    scored = Path(run_dir).resolve() / f"scored_{case.case_id}.jsonl"
-    review = Path(run_dir).resolve() / f"review_{case.case_id}.csv"
+    out_dir = Path(out_dir or run_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scored = out_dir / f"scored_{case.case_id}.jsonl"
+    review = out_dir / f"review_{case.case_id}.csv"
     module = INTEGRITY_SCORERS[runner.scorer]
     line_rule = entry.get("line_rule", module.DEFAULT_LINE_RULE)
     share_threshold = entry.get("share_threshold", module.DEFAULT_SHARE_THRESHOLD)
