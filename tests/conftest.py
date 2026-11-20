@@ -13,6 +13,14 @@ REAL_PYTHAINLP_PROBLEMS = orchestrator.pythainlp_problems
 
 
 @pytest.fixture(autouse=True)
+def no_real_dotenv(monkeypatch, tmp_path):
+    """A developer's real .env must never leak a key into a test."""
+    import api_model
+
+    monkeypatch.setattr(api_model, "DOTENV_PATH", tmp_path / "absent.env")
+
+
+@pytest.fixture(autouse=True)
 def lid_available(monkeypatch):
     """Tests run on machines without fastText or the language-ID model; the real check has its own tests."""
     monkeypatch.setattr(orchestrator, "lid_problems", lambda: [])

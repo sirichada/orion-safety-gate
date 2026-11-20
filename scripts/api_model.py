@@ -22,7 +22,7 @@ input plus the full token cap at the output price) must fit under the limit, and
 fails after it may have run is charged that worst case. The guard's running total is kept in a
 ledger file shared by every case of a run.
 
-Requires ORION_API_KEY in the environment. The key is only ever placed in the Authorization
+Requires ORION_API_KEY in a .env file in the repo root (preferred) or in the environment. The key is only ever placed in the Authorization
 header of the HTTP client and is never printed or written anywhere.
 
 Usage:
@@ -49,6 +49,7 @@ from run_config import API_CONCURRENCY_CEILING, DEFAULTS, BudgetExceeded
 
 BASE_URL = "https://api.orion.cmkl.ai/v1"
 API_KEY_ENV = "ORION_API_KEY"
+DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 MAX_ATTEMPTS = 6  # 429 / 5xx responses, with backoff
 MAX_STREAM_ATTEMPTS = 3  # transport errors and streams that ended without a finish_reason
@@ -87,10 +88,35 @@ def _redact(text: str) -> str:
     return _KEY_PATTERN.sub("sk-***", text)
 
 
+def _dotenv_value(path: Path, name: str) -> str | None:
+    """The value of NAME=value in a .env file; the last assignment wins, matching quotes are stripped."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return None
+    value = None
+    for line in lines:
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        if key.strip() != name:
+            continue
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+            raw = raw[1:-1]
+        value = raw
+    return value
+
+
 def _read_api_key() -> str:
-    key = os.environ.get(API_KEY_ENV)
+    # A .env file in the repo root takes priority over the environment variable.
+    key = _dotenv_value(DOTENV_PATH, API_KEY_ENV) or os.environ.get(API_KEY_ENV)
     if not key:
-        sys.exit(f"{API_KEY_ENV} is not set. Set it in the environment before using --backend api.")
+        sys.exit(f"{API_KEY_ENV} is not set. Put {API_KEY_ENV}=... in {DOTENV_PATH.name} in the repo root, "
+                 "or set it in the environment, before using --backend api.")
     return key
 
 
