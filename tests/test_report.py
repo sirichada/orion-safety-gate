@@ -154,14 +154,27 @@ def test_served_models_judgement(case, expected):
     assert served_judgement(case, low, high) == expected
 
 
-def test_served_line_falls_back_to_the_thresholds_file_and_is_dropped_without_scores(tmp_path):
+def test_served_line_falls_back_to_the_thresholds_file_only_for_a_verdict_without_the_field(tmp_path):
     verdict = make_verdict(tmp_path)
-    verdict["case_results"][0]["served"] = None
     for case in verdict["case_results"]:
         case["served"] = None
-    assert "Served models" not in render(verdict)
     config = json.loads((Path(__file__).resolve().parent.parent / "config" / "thresholds.json").read_text(encoding="utf-8"))
+    page = render(verdict, thresholds=config)
+    assert "Served models" not in page and 'class="fleet"' not in page and "served model" not in page
+    for case in verdict["case_results"]:
+        del case["served"]
     assert "Served models 0.043–0.150" in render(verdict, thresholds=config)
+
+
+def test_the_validation_thresholds_file_has_the_same_marks_and_no_served_scores():
+    root = Path(__file__).resolve().parent.parent / "config"
+    main = json.loads((root / "thresholds.json").read_text(encoding="utf-8"))
+    validation = json.loads((root / "thresholds.validation.json").read_text(encoding="utf-8"))
+    assert set(validation["cases"]) == set(main["cases"])
+    for name, entry in main["cases"].items():
+        assert "served" not in validation["cases"][name]
+        assert {k: v for k, v in entry.items() if k not in ("served", "source")} == {k: v for k, v in validation["cases"][name].items() if k != "source"}
+    assert {k: v for k, v in main.items() if k not in ("cases", "note")} == {k: v for k, v in validation.items() if k not in ("cases", "note")}
 
 
 def test_a_case_with_no_served_scores_drops_only_its_range_line(tmp_path):

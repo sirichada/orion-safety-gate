@@ -148,9 +148,13 @@ def stored_state(verdict: dict) -> str:
 
 
 def served_range(case: dict, thresholds: dict | None) -> tuple[float, float] | None:
-    served = case.get("served")
-    if not served and thresholds:
-        served = (thresholds.get("cases", {}).get(case["case_id"]) or {}).get("served")
+    # A verdict that stores a served field (even an empty one) is complete: a thresholds file with no served
+    # scores gives a report with no served-model wording. Only a verdict written before the field existed
+    # falls back to the thresholds file.
+    if "served" in case:
+        served = case["served"]
+    else:
+        served = ((thresholds or {}).get("cases", {}).get(case["case_id"]) or {}).get("served")
     values = [v for v in (served or {}).values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
     return (min(values), max(values)) if values else None
 
