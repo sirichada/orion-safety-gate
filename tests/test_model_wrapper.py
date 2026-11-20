@@ -443,7 +443,7 @@ def test_presence_penalty_is_api_only_and_in_range(wrapper, fake_api, extra):
         wrapper.run(*extra)
 
 
-@pytest.mark.parametrize("extra", [["--top-k", "20"], ["--backend", "api", "--max-thb", "5", "--top-k", "0"]])
-def test_top_k_is_api_only_and_positive(wrapper, fake_api, extra):
+@pytest.mark.parametrize("extra", [["--top-k", "0"], ["--backend", "api", "--max-thb", "5", "--top-k", "0"]])
+def test_top_k_must_be_positive(wrapper, fake_api, extra):
     with pytest.raises(SystemExit):
         wrapper.run(*extra)

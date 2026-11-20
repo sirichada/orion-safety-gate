@@ -50,6 +50,7 @@ PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system
 
 # Where the gateway accepts top_k: a top-level field is rejected with HTTP 500.
 TOP_K_LOCATION = "extra_body"
+HF_TOP_K_LOCATION = "generate_kwargs"
 
 # presence_penalty is accepted as a top-level field and range-checked to [-2, 2].
 PRESENCE_PENALTY_LOCATION = "top_level"
@@ -62,12 +63,13 @@ SAMPLING_FIELDS = tuple(GREEDY_SAMPLING)
 def resolve_protocol_sampling(config: dict | None, model_id: str, backend: str) -> dict:
     """The sampling the protocol prescribes for one model.
 
-    The hf backend runs greedy. The api backend (thinking models) reads config["protocols"][model_id]
-    and refuses a model with no entry, the same as a missing cap.
+    The api backend (thinking models) reads config["protocols"][model_id] and refuses a model with no entry,
+    the same as a missing cap. The hf backend is greedy unless the table holds a protocols entry for the model;
+    an hf entry may set temperature, top_p and top_k (there is no presence penalty in generate()).
     """
-    if backend != "api":
-        return dict(GREEDY_SAMPLING)
     entry = ((config or {}).get("protocols") or {}).get(model_id)
+    if backend != "api" and not isinstance(entry, dict):
+        return dict(GREEDY_SAMPLING)
     if not isinstance(entry, dict):
         raise GenerationConfigError(
             f"no sampling protocol for model {model_id!r} in the generation config; add protocols[model] before an api run"
@@ -77,11 +79,18 @@ def resolve_protocol_sampling(config: dict | None, model_id: str, backend: str) 
         raise GenerationConfigError(
             f"protocols[{model_id!r}] needs numeric temperature and top_p, and may only add top_k and presence_penalty; got {entry!r}"
         )
+    if backend != "api" and "presence_penalty" in entry:
+        raise GenerationConfigError(f"protocols[{model_id!r}] sets presence_penalty, which the hf backend does not support")
     return {k: entry.get(k, GREEDY_SAMPLING[k]) for k in SAMPLING_FIELDS}
 
 
 def effective_sampling(
-    temperature: float, top_p: float, top_k: int | None, presence_penalty: float | None = None, protocol: dict | None = None
+    temperature: float,
+    top_p: float,
+    top_k: int | None,
+    presence_penalty: float | None = None,
+    protocol: dict | None = None,
+    backend: str = "api",
 ) -> dict:
     """The sampling a run requested, and whether it is the protocol's (greedy unless a per-model protocol is given)."""
     protocol = protocol or GREEDY_SAMPLING
@@ -89,7 +98,7 @@ def effective_sampling(
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
-        "top_k_location": TOP_K_LOCATION if top_k is not None else None,
+        "top_k_location": (TOP_K_LOCATION if backend == "api" else HF_TOP_K_LOCATION) if top_k is not None else None,
         "presence_penalty": presence_penalty,
         "presence_penalty_location": PRESENCE_PENALTY_LOCATION if presence_penalty is not None else None,
         "matches_protocol": (temperature, top_p, top_k, presence_penalty) == tuple(protocol[k] for k in SAMPLING_FIELDS),

@@ -681,8 +681,8 @@ def test_default_sampling_forwards_no_presence_penalty():
 @pytest.mark.parametrize(
     "extra",
     [
-        ["--temperature", "1.0"],  # hf backend
-        ["--top-k", "20"],  # hf backend
+        ["--top-k", "0"],  # hf backend
+        ["--temperature", "-0.1"],  # hf backend
         ["--presence-penalty", "1.5"],  # hf backend
         ["--backend", "api", "--max-thb", "3", "--presence-penalty", "2.5"],
         ["--backend", "api", "--max-thb", "3", "--presence-penalty", "-2.1"],
@@ -1062,3 +1062,89 @@ def test_no_thinking_renders_the_template_with_enable_thinking_false():
     assert generate.count_truncated is not None
     assert model_wrapper.template_kwargs(type("A", (), {"no_thinking": False})()) == {}
     assert model_wrapper.template_kwargs(type("A", (), {"no_thinking": True})()) == {"enable_thinking": False}
+
+
+QWEN_HF_PROTOCOL = {"protocols": {"Mango 1.5-9B": {"temperature": 0.6, "top_p": 0.95, "top_k": 20}}}
+GENERATION = {"max_new_tokens": 256, "max_input_tokens": 2048}
+
+
+def test_a_default_hf_run_is_greedy_unchanged_and_not_off_protocol():
+    args = parse(*BASE)
+    safety_suite.apply_protocol_sampling(args, run_config.resolve_protocol_sampling({}, "Mango 1.5-9B", "hf"))
+    forwarded = safety_suite.wrapper_args(args, None, GENERATION)
+    assert forwarded[forwarded.index("--temperature") + 1] == "0.0" and forwarded[forwarded.index("--top-p") + 1] == "1.0"
+    assert "--top-k" not in forwarded and "top_k" not in safety_suite.forwarded_values(args, None, GENERATION)
+    assert safety_suite.sampling_of(args)["matches_protocol"] and safety_suite.protocol_deviations(args) == []
+    assert safety_suite.protocol_record(args) == {}
+
+
+def test_an_hf_protocols_entry_sets_the_sampling_and_a_run_matching_it_is_not_off_protocol():
+    args = parse(*BASE)
+    safety_suite.apply_protocol_sampling(args, run_config.resolve_protocol_sampling(QWEN_HF_PROTOCOL, "Mango 1.5-9B", "hf"))
+    assert (args.temperature, args.top_p, args.top_k) == (0.6, 0.95, 20)
+    forwarded = safety_suite.wrapper_args(args, None, GENERATION)
+    assert forwarded[forwarded.index("--temperature") + 1] == "0.6" and forwarded[forwarded.index("--top-k") + 1] == "20"
+    assert safety_suite.forwarded_values(args, None, GENERATION)["top_k"] == 20
+    sampling = safety_suite.sampling_of(args)
+    assert sampling["matches_protocol"] and sampling["top_k_location"] == "generate_kwargs"
+    assert safety_suite.protocol_deviations(args) == []
+    assert safety_suite.protocol_record(args)["top_k"] == 20
+
+
+def test_an_hf_flag_is_accepted_and_off_the_protocol_entry_is_a_deviation():
+    args = parse(*BASE, "--temperature", "0.0")
+    safety_suite.apply_protocol_sampling(args, run_config.resolve_protocol_sampling(QWEN_HF_PROTOCOL, "Mango 1.5-9B", "hf"))
+    assert (args.temperature, args.top_p, args.top_k) == (0.0, 0.95, 20)
+    assert safety_suite.protocol_deviations(args) == ["sampling"]
+    greedy_flags = parse(*BASE, "--temperature", "0.7", "--top-k", "40")
+    safety_suite.apply_protocol_sampling(greedy_flags, run_config.resolve_protocol_sampling({}, "Mango 1.5-9B", "hf"))
+    assert greedy_flags.top_k == 40 and safety_suite.protocol_deviations(greedy_flags) == ["sampling"]
+
+
+def test_hf_protocol_entries_are_validated_and_api_still_needs_one():
+    with pytest.raises(run_config.GenerationConfigError, match="presence_penalty"):
+        run_config.resolve_protocol_sampling({"protocols": {"m": {"temperature": 1.0, "top_p": 1.0, "presence_penalty": 1.0}}}, "m", "hf")
+    with pytest.raises(run_config.GenerationConfigError, match="needs numeric temperature"):
+        run_config.resolve_protocol_sampling({"protocols": {"m": {"temperature": "hot"}}}, "m", "hf")
+    with pytest.raises(run_config.GenerationConfigError, match="no sampling protocol"):
+        run_config.resolve_protocol_sampling({}, "m", "api")
+
+
+def test_generate_passes_top_k_to_the_model_only_when_sampling():
+    import torch
+
+    import model_wrapper
+
+    class Inputs(dict):
+        def to(self, device):
+            return self
+
+    class Tok:
+        chat_template = None
+        pad_token_id = 0
+
+        def __call__(self, prompts, **kwargs):
+            return Inputs(input_ids=torch.zeros((len(prompts), 2), dtype=torch.long))
+
+        def batch_decode(self, ids, **kwargs):
+            return ["x"] * len(ids)
+
+    class Model:
+        device = "cpu"
+
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return torch.zeros((1, 3), dtype=torch.long)
+
+    for top_k, temperature, expected in ((20, 0.6, 20), (None, 0.6, 0), (20, 0.0, "absent")):
+        model = Model()
+        generate = model_wrapper.make_generate(model, Tok(), apply_chat_template=False, **({"top_k": top_k} if top_k else {}))
+        generate(["hello"], 8, temperature, 0.95)
+        call = model.calls[0]
+        if expected == "absent":
+            assert call["do_sample"] is False and "top_k" not in call and "temperature" not in call
+        else:
+            assert call["do_sample"] is True and call["top_k"] == expected and call["temperature"] == 0.6

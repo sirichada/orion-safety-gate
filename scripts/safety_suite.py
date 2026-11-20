@@ -227,20 +227,24 @@ def parse_args(argv: list[str] | None = None):
             parser.error("--max-thb must be positive")
     elif args.max_thb is not None:
         parser.error("--max-thb applies only to the api backend")
-    sampling_flags = [
-        flag
-        for flag, given in (
-            ("--temperature", args.temperature is not None),
-            ("--top-p", args.top_p is not None),
-            ("--top-k", args.top_k is not None),
-            ("--presence-penalty", args.presence_penalty is not None),
+    if args.presence_penalty is not None and args.backend != "api":
+        parser.error("--presence-penalty applies only to the api backend")
+    args.sampling_flags = {
+        name
+        for name, given in (
+            ("temperature", args.temperature is not None),
+            ("top_p", args.top_p is not None),
+            ("top_k", args.top_k is not None),
+            ("presence_penalty", args.presence_penalty is not None),
         )
         if given
-    ]
-    if sampling_flags and args.backend != "api":
-        parser.error(f"{', '.join(sampling_flags)} apply only to the api backend")
+    }
     if args.backend != "api":
-        args.temperature, args.top_p = run_config.GREEDY_SAMPLING["temperature"], run_config.GREEDY_SAMPLING["top_p"]
+        # A flag left unset takes the model's protocol later (greedy when it has none); these are the greedy defaults.
+        if args.temperature is None:
+            args.temperature = run_config.GREEDY_SAMPLING["temperature"]
+        if args.top_p is None:
+            args.top_p = run_config.GREEDY_SAMPLING["top_p"]
     if args.temperature is not None and args.temperature < 0:
         parser.error("--temperature must be >= 0")
     if args.top_p is not None and not 0 < args.top_p <= 1:
@@ -269,15 +273,25 @@ def resolve_local(value: str | None) -> str | None:
 
 def sampling_of(args) -> dict:
     return run_config.effective_sampling(
-        args.temperature, args.top_p, args.top_k, args.presence_penalty, getattr(args, "protocol_sampling", None)
+        args.temperature, args.top_p, args.top_k, args.presence_penalty, getattr(args, "protocol_sampling", None), args.backend
     )
+
+
+def protocol_record(args) -> dict:
+    """The sampling protocol to record: an api run's, or an hf run's when its model has a non-greedy protocols entry."""
+    protocol = getattr(args, "protocol_sampling", None) or {}
+    if args.backend == "api" or (protocol and protocol != run_config.GREEDY_SAMPLING):
+        return protocol
+    return {}
 
 
 def apply_protocol_sampling(args, protocol: dict) -> None:
     """Fills every sampling field a flag left unset from the model's protocol; a flag that is set wins and shows as a deviation."""
     args.protocol_sampling = protocol
+    given = getattr(args, "sampling_flags", None)
     for name in run_config.SAMPLING_FIELDS:
-        if getattr(args, name) is None:
+        unset = getattr(args, name) is None if given is None else name not in given
+        if unset:
             setattr(args, name, protocol[name])
 
 
@@ -328,6 +342,8 @@ def wrapper_args(
         forwarded += ["--precision", args.precision, "--max-input-tokens", str(caps["max_input_tokens"])]
         if args.no_thinking:
             forwarded += ["--no-thinking"]
+        if args.top_k is not None:
+            forwarded += ["--top-k", str(args.top_k)]
         if revisions.get("model"):
             forwarded += ["--model-revision", revisions["model"]]
         if revisions.get("adapter"):
@@ -365,6 +381,8 @@ def forwarded_values(args, revisions: dict | None = None, generation: dict | Non
         )
         if args.no_thinking:
             values["no_thinking"] = True
+        if args.top_k is not None:
+            values["top_k"] = args.top_k
     return values
 
 
@@ -432,7 +450,7 @@ def build_run_args(
             if args.backend == "api"
             else None
         ),
-        "protocol": {**run_config.PROTOCOL, **(getattr(args, "protocol_sampling", {}) if args.backend == "api" else {})},
+        "protocol": {**run_config.PROTOCOL, **protocol_record(args)},
         "sampling": sampling_of(args),
         "prompt_sample": sample,
         "per_model": baseline["per_model"],

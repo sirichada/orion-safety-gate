@@ -53,7 +53,7 @@ class StoppedNoAnswer(RuntimeError):
 load_model = load_causal_lm
 
 
-def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_template: bool = True, template_kwargs: dict | None = None):
+def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_template: bool = True, template_kwargs: dict | None = None, top_k: int | None = None):
     """Returns generate(prompts, max_new_tokens, temperature, top_p, seed=None,
     chat_template=None) -> List[str].
 
@@ -110,7 +110,8 @@ def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_tem
             pad_token_id=tokenizer.pad_token_id,
         )
         if temperature > 0:
-            gen_kwargs.update(do_sample=True, temperature=temperature, top_p=top_p)
+            # top_k=0 switches top-k filtering off, so a run without --top-k does not inherit the checkpoint's own default.
+            gen_kwargs.update(do_sample=True, temperature=temperature, top_p=top_p, top_k=top_k if top_k is not None else 0)
         else:
             gen_kwargs.update(do_sample=False)
         with torch.no_grad():
@@ -182,6 +183,8 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
     args_used.update(precision=args.precision, max_input_tokens=args.max_input_tokens)
     if args.no_thinking:
         args_used["no_thinking"] = True
+    if args.top_k is not None:
+        args_used["top_k"] = args.top_k
     template = args.chat_template if args.chat_template is not None else tokenizer.chat_template
     source = "override" if args.chat_template is not None else "tokenizer"
 
@@ -234,7 +237,8 @@ def main():
         "--top-k",
         type=int,
         default=None,
-        help="api backend: top_k, sent inside the request's extra_body object (the gateway rejects it as a top-level field)",
+        help="top_k. api backend: sent inside the request's extra_body object (the gateway rejects it as a top-level field). "
+        "hf backend: passed to generate() when sampling (temperature > 0)",
     )
     parser.add_argument(
         "--presence-penalty",
@@ -313,8 +317,6 @@ def main():
     elif args.max_thb is not None or args.spend_ledger is not None:
         parser.error("--max-thb/--spend-ledger apply only to the api backend")
     if args.top_k is not None:
-        if args.backend != "api":
-            parser.error("--top-k applies only to the api backend")
         if args.top_k < 1:
             parser.error("--top-k must be >= 1")
     if args.presence_penalty is not None:
@@ -379,6 +381,7 @@ def main():
             max_input_tokens=args.max_input_tokens,
             apply_chat_template=not args.no_chat_template,
             **({"template_kwargs": template_kwargs(args)} if args.no_thinking else {}),
+            **({"top_k": args.top_k} if args.top_k is not None else {}),
         )
 
     records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]
