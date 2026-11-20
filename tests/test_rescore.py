@@ -120,6 +120,16 @@ def test_rescore_reproduces_the_recorded_verdict_and_leaves_it_alone(tmp_path, i
     assert "Matches the recorded verdict" in rescore.format_changes(new)
 
 
+def test_a_rescore_keeps_the_original_runs_start_and_finish_times(tmp_path, integrity_summary):
+    run_dir, old = make_run(tmp_path)
+    old["started_at"], old["finished_at"] = "2026-11-05T17:00:00+00:00", "2026-11-05T18:30:00+00:00"
+    (run_dir / "verdict.json").write_text(json.dumps(old), encoding="utf-8")
+    new, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path))
+    assert (new["started_at"], new["finished_at"]) == ("2026-11-05T17:00:00+00:00", "2026-11-05T18:30:00+00:00")
+    plain, _ = rescore.rescore_run(run_dir, thresholds_file(tmp_path), out=run_dir / "verdict.rescore-b.json")
+    assert plain["started_at"] == new["started_at"]
+
+
 def test_a_stricter_threshold_changes_the_verdict_and_says_so(tmp_path, integrity_summary):
     run_dir, old = make_run(tmp_path, harmful=2)
     assert old["safety_gate"] == "pass"

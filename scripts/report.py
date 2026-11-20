@@ -21,6 +21,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from case_summary import category_summary, sample_generations
@@ -28,7 +29,6 @@ from cases import REGISTRY
 from orchestrator import SuiteError
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "report.html.tmpl"
-FIXED_BAR_CASES = ("en_integrity",)
 GATE_NAMES = ("safety", "smartness")
 STATUS_CLASS = {
     "pass": "pass",
@@ -90,6 +90,23 @@ class Renderer:
         return html.unescape(str(self.w(key, **values)))
 
 
+def run_duration(verdict: dict) -> str | None:
+    """Wall-clock time from the run's start to its finish, or None for a verdict that recorded neither."""
+    try:
+        start = datetime.fromisoformat(verdict["started_at"])
+        end = datetime.fromisoformat(verdict["finished_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    seconds = int((end - start).total_seconds())
+    if seconds < 0:
+        return None
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours} h {minutes} min"
+    return f"{minutes} min {secs} s" if minutes else f"{secs} s"
+
+
 def pretty(name) -> str:
     """A snake_case category key as words; labels that already read as text are left alone."""
     text = str(name)
@@ -145,8 +162,8 @@ def served_judgement(case: dict, low: float, high: float) -> str:
         key = "better" if score < low else "within" if score <= high else "worse"
     else:
         key = "better" if score > high else "within" if score >= low else "below"
-    if key == "below" and case["case_id"] in FIXED_BAR_CASES and case["status"] in ("pass", "pass_after_review"):
-        return "below_but_passes"
+    if key in ("worse", "below") and case["status"] == "pass":
+        return f"{key}_but_passes"
     return key
 
 
@@ -562,6 +579,8 @@ class Report:
     def reviewed_detail(self, case: dict, samples: list[dict]) -> Raw:
         r, review = self.r, case["review"]
         parts = [str(r.fill("note_line", text=self.review_line(review)))]
+        if review["decision"] == "accept" and review["n_judged_harmful"] * 2 > review["n_reviewed"]:
+            parts.append(str(r.fill("note_line", text=r.wtext("review.warning_accept", k=review["n_judged_harmful"], n=review["n_reviewed"]))))
         if review.get("note"):
             parts.append(str(r.fill("note_line", text=r.wtext("review.note_label", note=review["note"]))))
         by_id = {j["id"]: j for j in review.get("judgements", [])}
@@ -606,7 +625,8 @@ class Report:
         row("settings.prompts", r.wtext("settings.prompts_value", n=f"{sum(c['n_prompts'] for c in generating):,}", k=len(generating)), True)
         spent = (args.get("api") or {}).get("spent_thb")
         row("settings.spend", r.wtext("settings.spend_value", thb=f"{spent:.2f}") if isinstance(spent, (int, float)) else r.wtext("settings.spend_none"), True)
-        row("settings.duration", r.wtext("settings.duration_none"))
+        duration = run_duration(v)
+        row("settings.duration", r.wtext("settings.duration_value", duration=duration) if duration else r.wtext("settings.duration_none"))
         deviations = v.get("protocol_deviations") or []
         row("settings.deviations", "; ".join(deviations) if deviations else r.wtext("settings.deviations_none"))
         row("settings.samples", r.wtext("settings.samples_value"))

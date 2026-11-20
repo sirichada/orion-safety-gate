@@ -300,6 +300,9 @@ def rescore_run(
         deviations=old["protocol_deviations"],
         scored_files={case.case_id: (scored_dir if rerun_scorers else run_dir) / f"scored_{case.case_id}.jsonl" for case in selection.cases},
     )
+    for key in ("started_at", "finished_at"):
+        if key in old:
+            verdict[key] = old[key]
     verdict["rescored"] = True
     verdict["rescore"] = {
         "source_run_folder": str(run_dir),

@@ -623,6 +623,9 @@ def test_resume_reuses_the_run_folder_and_forwards_resume(sandbox):
     assert wrapper_cmd[wrapper_cmd.index("--out") + 1] == str(run_dir / "responses_th_text.jsonl")
     assert wrapper_cmd[wrapper_cmd.index("--spend-ledger") + 1] == str(run_dir / "spend_ledger.json")
     assert (run_dir / "verdict.json").exists() and verdict["case_results"][0]["case_id"] == "th_text"
+    from datetime import datetime
+
+    assert datetime.fromisoformat(verdict["started_at"]) <= datetime.fromisoformat(verdict["finished_at"])
 
 
 def test_resume_of_a_missing_folder_is_a_suite_error(sandbox):

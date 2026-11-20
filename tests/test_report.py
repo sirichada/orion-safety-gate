@@ -133,7 +133,7 @@ def test_a_score_that_rounds_to_the_mark_but_fails_shows_four_decimals(tmp_path)
 def test_english_integrity_below_the_served_range_but_passing_gets_the_fixed_bar_line(tmp_path):
     page = render(make_verdict(tmp_path, {"en_integrity": 0.990}), thresholds=json.loads((Path(__file__).resolve().parent.parent / "config" / "thresholds.json").read_text(encoding="utf-8")))
     row = case_row(page, "en_integrity")
-    assert "Served models 0.997–0.998. Below the served models&#x27; range, but above the pass mark." in row
+    assert "Served models 0.997–0.998. Below the weakest served model, but above the pass mark." in row
 
 
 @pytest.mark.parametrize(
@@ -141,10 +141,12 @@ def test_english_integrity_below_the_served_range_but_passing_gets_the_fixed_bar
     [
         ({"case_id": "en_text", "direction": "lower_is_better", "score": 0.02, "status": "pass"}, "better"),
         ({"case_id": "en_text", "direction": "lower_is_better", "score": 0.10, "status": "pass"}, "within"),
-        ({"case_id": "en_text", "direction": "lower_is_better", "score": 0.20, "status": "pass"}, "worse"),
+        ({"case_id": "en_text", "direction": "lower_is_better", "score": 0.20, "status": "pass"}, "worse_but_passes"),
+        ({"case_id": "en_text", "direction": "lower_is_better", "score": 0.30, "status": "fail"}, "worse"),
+        ({"case_id": "th_knowledge", "direction": "higher_is_better", "score": 0.30, "status": "fail"}, "below"),
         ({"case_id": "th_knowledge", "direction": "higher_is_better", "score": 0.9, "status": "pass"}, "better"),
         ({"case_id": "th_knowledge", "direction": "higher_is_better", "score": 0.7, "status": "pass"}, "within"),
-        ({"case_id": "th_knowledge", "direction": "higher_is_better", "score": 0.62, "status": "pass"}, "below"),
+        ({"case_id": "th_knowledge", "direction": "higher_is_better", "score": 0.62, "status": "pass"}, "below_but_passes"),
     ],
 )
 def test_served_models_judgement(case, expected):
@@ -348,3 +350,32 @@ def test_the_notice_mark_comes_from_the_review_gated_case_not_a_fixed_case(tmp_p
     for case in verdict["case_results"]:
         case["needs_review"] = False
     assert "so above the review mark a person reviews a sample" in render(verdict)
+
+
+def test_a_passing_lower_is_better_score_above_the_weakest_served_model_says_it_is_within_the_pass_mark(tmp_path):
+    config = json.loads((Path(__file__).resolve().parent.parent / "config" / "thresholds.json").read_text(encoding="utf-8"))
+    page = render(make_verdict(tmp_path, {"en_text": 0.18}), thresholds=config)
+    assert "Served models 0.043–0.150. Worse than the weakest served model, but within the pass mark." in case_row(page, "en_text")
+
+
+def test_the_duration_is_shown_from_the_recorded_start_and_finish_and_older_verdicts_say_not_recorded(tmp_path):
+    from report import run_duration
+
+    verdict = make_verdict(tmp_path)
+    assert "<dt>Duration</dt><dd>Not recorded</dd>" in render(verdict)
+    verdict["started_at"], verdict["finished_at"] = "2026-11-20T09:00:00+00:00", "2026-11-20T10:12:30+00:00"
+    assert "<dt>Duration</dt><dd>1 h 12 min</dd>" in render(verdict)
+    assert run_duration({**verdict, "finished_at": "2026-11-20T09:04:05+00:00"}) == "4 min 5 s"
+    assert run_duration({**verdict, "finished_at": "2026-11-20T09:00:09+00:00"}) == "9 s"
+    assert run_duration({**verdict, "finished_at": "2026-11-20T08:00:00+00:00"}) is None
+    assert run_duration({**verdict, "started_at": "not a time"}) is None
+
+
+def test_an_accept_with_most_replies_judged_harmful_shows_a_warning_but_is_still_applied(tmp_path):
+    needs = make_verdict(tmp_path, {"th_text": 0.201})
+    warned = render(reviewed(needs, "accept", harmful=30))
+    assert "Check this review: it accepts the model although 30 of 30 flagged replies were judged harmful." in warned
+    assert '<p class="word">Admitted after review</p>' in warned
+    assert "Check this review" not in render(reviewed(needs, "accept", harmful=3))
+    assert "Check this review" not in render(reviewed(needs, "reject", harmful=30))
+    assert "Check this review" not in render(reviewed(needs, "accept", harmful=15))

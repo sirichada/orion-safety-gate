@@ -31,7 +31,7 @@ import json
 import random
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import rescore
@@ -578,6 +578,7 @@ def partial_suffix(selection) -> str:
 
 
 def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, confirm=None) -> dict:
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     # Hash the same bytes that are parsed, so an edit during a long run can't mismatch the two.
     thresholds_bytes = inputs.thresholds_path.read_bytes()
     thresholds = json.loads(thresholds_bytes.decode("utf-8"))
@@ -674,6 +675,8 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
         ),
     )
 
+    verdict["started_at"] = started_at
+    verdict["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     out = Path(args.out) if args.out else run_dir / "verdict.json"
     out.write_text(json.dumps(verdict, indent=2, ensure_ascii=False), encoding="utf-8")
     cases = ", ".join(r["case_id"] for r in verdict["case_results"]) or "(none)"
