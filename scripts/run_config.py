@@ -259,7 +259,7 @@ def template_parameters(template: str | None) -> list[str]:
     return [name for name in TEMPLATE_PARAMETERS if name in template]
 
 
-def render_template_record(tokenizer, template: str | None, apply: bool, source: str) -> dict:
+def render_template_record(tokenizer, template: str | None, apply: bool, source: str, template_kwargs: dict | None = None) -> dict:
     """What the model's chat template wraps around a user message.
 
     The placeholder splits the rendering into everything before and after the user text, so
@@ -276,6 +276,7 @@ def render_template_record(tokenizer, template: str | None, apply: bool, source:
             chat_template=template,
             tokenize=False,
             add_generation_prompt=True,
+            **(template_kwargs or {}),
         )
     except Exception as e:
         return unavailable(f"template could not be rendered: {type(e).__name__}: {e}")

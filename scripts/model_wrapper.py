@@ -53,7 +53,7 @@ class StoppedNoAnswer(RuntimeError):
 load_model = load_causal_lm
 
 
-def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_template: bool = True):
+def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_template: bool = True, template_kwargs: dict | None = None):
     """Returns generate(prompts, max_new_tokens, temperature, top_p, seed=None,
     chat_template=None) -> List[str].
 
@@ -75,6 +75,7 @@ def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_tem
                     chat_template=template,
                     tokenize=False,
                     add_generation_prompt=True,
+                    **(template_kwargs or {}),
                 )
                 for p in prompts
             ]
@@ -120,6 +121,11 @@ def make_generate(model, tokenizer, max_input_tokens: int = 2048, apply_chat_tem
 
     generate.count_truncated = count_truncated
     return generate
+
+
+def template_kwargs(args) -> dict:
+    """Extra chat-template variables for the hf backend: --no-thinking sets enable_thinking to false."""
+    return {"enable_thinking": False} if getattr(args, "no_thinking", False) else {}
 
 
 def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
@@ -174,6 +180,8 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
         )
 
     args_used.update(precision=args.precision, max_input_tokens=args.max_input_tokens)
+    if args.no_thinking:
+        args_used["no_thinking"] = True
     template = args.chat_template if args.chat_template is not None else tokenizer.chat_template
     source = "override" if args.chat_template is not None else "tokenizer"
 
@@ -193,13 +201,13 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
         precision=run_config.describe_precision(args.precision, model),
         model_input={
             "chat_template": run_config.render_template_record(
-                tokenizer, template, not args.no_chat_template, source
+                tokenizer, template, not args.no_chat_template, source, template_kwargs(args)
             )
         },
         per_model={
             "max_new_tokens": args.max_new_tokens,
             "max_input_tokens": args.max_input_tokens,
-            "thinking": {"template_parameters": run_config.template_parameters(template), "passed": {}},
+            "thinking": {"template_parameters": run_config.template_parameters(template), "passed": template_kwargs(args)},
         },
         provenance={
             "model_revision": model_revision,
@@ -252,6 +260,7 @@ def main():
     )
     parser.add_argument("--no-chat-template", action="store_true", help="Skip the tokenizer's chat template, send raw prompts")
     parser.add_argument("--batch-size", type=int, default=run_config.DEFAULTS["batch_size"], help="Prompts per generate() call -- the full HarmBench/ThaiSafetyBench prompt sets (400/1,889) would OOM a 12GB GPU in one call")
+    parser.add_argument("--no-thinking", action="store_true", help="hf only: render the chat template with enable_thinking=false")
     parser.add_argument("--max-input-tokens", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=None, help="Seed for reproducible sampling")
     parser.add_argument(
@@ -321,12 +330,13 @@ def main():
             or args.model_revision
             or args.adapter_revision
             or args.no_chat_template
+            or args.no_thinking
             or args.chat_template is not None
             or args.max_input_tokens != run_config.DEFAULTS["max_input_tokens"]
         ):
             parser.error(
                 "--adapter/--precision/--no-4bit/--model-revision/--adapter-revision/--no-chat-template/"
-                "--chat-template/--max-input-tokens are hf-only"
+                "--chat-template/--max-input-tokens/--no-thinking are hf-only"
             )
         from api_model import SpendGuard, make_api_generate
 
@@ -364,7 +374,11 @@ def main():
                 Path(args.out + ".error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
             sys.exit(CONFIG_ERROR_EXIT_CODE)
         generate = make_generate(
-            model, tokenizer, max_input_tokens=args.max_input_tokens, apply_chat_template=not args.no_chat_template
+            model,
+            tokenizer,
+            max_input_tokens=args.max_input_tokens,
+            apply_chat_template=not args.no_chat_template,
+            **({"template_kwargs": template_kwargs(args)} if args.no_thinking else {}),
         )
 
     records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]

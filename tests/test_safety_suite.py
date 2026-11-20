@@ -1036,3 +1036,29 @@ def test_format_verdict_summary_lists_cases_and_banners():
     assert ">= 0" in out and "insufficient_data" in out
     assert "en_image" in out and "not run (unimplemented)" in out
     assert "admitted: False" in out and "provisional" in out and "Partial run" in out
+
+
+def test_no_thinking_is_forwarded_expected_back_and_hf_only():
+    args = parse(*BASE, "--no-thinking")
+    forwarded = safety_suite.wrapper_args(args, None, {"max_new_tokens": 256, "max_input_tokens": 2048})
+    assert "--no-thinking" in forwarded
+    assert safety_suite.forwarded_values(args, None, {"max_new_tokens": 256, "max_input_tokens": 2048})["no_thinking"] is True
+    plain = parse(*BASE)
+    assert "--no-thinking" not in safety_suite.wrapper_args(plain, None, {"max_new_tokens": 256, "max_input_tokens": 2048})
+    with pytest.raises(SystemExit):
+        parse(*BASE, "--backend", "api", "--max-thb", "3", "--no-thinking")
+
+
+def test_no_thinking_renders_the_template_with_enable_thinking_false():
+    import model_wrapper
+
+    class Tok:
+        chat_template = "t"
+
+        def apply_chat_template(self, messages, **kwargs):
+            return f"enable_thinking={kwargs.get('enable_thinking', 'default')}|{messages[0]['content']}"
+
+    generate = model_wrapper.make_generate(None, Tok(), template_kwargs=model_wrapper.template_kwargs(type("A", (), {"no_thinking": True})()))
+    assert generate.count_truncated is not None
+    assert model_wrapper.template_kwargs(type("A", (), {"no_thinking": False})()) == {}
+    assert model_wrapper.template_kwargs(type("A", (), {"no_thinking": True})()) == {"enable_thinking": False}

@@ -183,6 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="4bit = bitsandbytes NF4 (default); full = bfloat16; as_published = the checkpoint's own "
         "dtype and quantization, required for pre-quantized checkpoints. hf backend only",
     )
+    run.add_argument("--no-thinking", action="store_true", help="hf backend only: render the model's chat template with enable_thinking=false")
     run.add_argument("--model-revision", default=None, help="Hub branch/tag/commit for --model (default: main, resolved once)")
     run.add_argument("--adapter-revision", default=None, help="Hub branch/tag/commit for --adapter (default: main, resolved once)")
     run.add_argument("--max-consecutive-failures", type=int, default=DEFAULT_MAX_CONSECUTIVE_FAILURES)
@@ -211,6 +212,7 @@ def parse_args(argv: list[str] | None = None):
                 ("--model-revision", args.model_revision),
                 ("--adapter-revision", args.adapter_revision),
                 ("--precision", args.precision != run_config.DEFAULTS["precision"]),
+                ("--no-thinking", args.no_thinking),
             )
             if given
         ]
@@ -324,6 +326,8 @@ def wrapper_args(
         forwarded += ["--resume"]
     if args.backend == "hf":
         forwarded += ["--precision", args.precision, "--max-input-tokens", str(caps["max_input_tokens"])]
+        if args.no_thinking:
+            forwarded += ["--no-thinking"]
         if revisions.get("model"):
             forwarded += ["--model-revision", revisions["model"]]
         if revisions.get("adapter"):
@@ -359,6 +363,8 @@ def forwarded_values(args, revisions: dict | None = None, generation: dict | Non
             model_revision=revisions.get("model"),
             adapter_revision=revisions.get("adapter"),
         )
+        if args.no_thinking:
+            values["no_thinking"] = True
     return values
 
 
