@@ -823,9 +823,7 @@ def read_spent(ledger: Path | None) -> float | None:
 def api_price_problem(model: str) -> str | None:
     import api_model
 
-    if model not in api_model.PRICES_THB_PER_M:
-        return f"no price for model {model!r} in api_model.PRICES_THB_PER_M; refusing to run without a spend bound"
-    return None
+    return api_model.price_problem(model)
 
 
 def format_dry_run(args, selection, generation: dict, calibration_file: str | None) -> str:
@@ -834,9 +832,10 @@ def format_dry_run(args, selection, generation: dict, calibration_file: str | No
         return "  spend        hf backend: no API spend"
     import api_model
 
-    price_in, price_out = api_model.PRICES_THB_PER_M.get(args.model, (None, None))
-    if price_in is None:
-        return f"  spend        no price for {args.model!r}; an api run would be refused"
+    problem = api_model.price_problem(args.model)
+    if problem:
+        return f"  spend        {problem}; an api run would be refused"
+    price_in, price_out = api_model.price_of(args.model)
     calibration = None
     if calibration_file:
         calibration = json.loads(Path(calibration_file).read_text(encoding="utf-8"))

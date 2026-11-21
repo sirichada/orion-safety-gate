@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -9,6 +11,7 @@ import pytest
 
 import api_model
 import run_config
+from conftest import TEST_PRICES, write_prices
 
 MODEL = "Mango 1.5-9B"
 BASE = "https://api.example/v1"
@@ -250,17 +253,42 @@ def test_no_answer_retries_re_request_until_an_answer_or_the_limit():
 # ---------------------------------------------------------------- spend
 
 
-def test_worst_case_and_usage_cost_use_the_dated_price_table():
-    assert api_model.PRICES_THB_PER_M["Qwen 3.8-Flash-Next"] == (1.00, 1.00)
-    assert api_model.worst_case_thb("Qwen 3.8-Flash-Next", 100, 1000) == pytest.approx((100 * 1 + 1000 * 1) / 1e6)
-    assert api_model.usage_thb("Mango 1.5-9B", 1000, 2000) == pytest.approx((1000 * 1 + 2000 * 1) / 1e6)
+def test_worst_case_and_usage_cost_follow_the_prices_file():
+    price_in, price_out = TEST_PRICES["Qwen 3.8-Flash-Next"]
+    assert api_model.worst_case_thb("Qwen 3.8-Flash-Next", 100, 1000) == pytest.approx((100 * price_in + 1000 * price_out) / 1e6)
+    price_in, price_out = TEST_PRICES["Mango 1.5-9B"]
+    assert api_model.usage_thb("Mango 1.5-9B", 1000, 2000) == pytest.approx((1000 * price_in + 2000 * price_out) / 1e6)
 
 
-def test_price_table_matches_the_probes():
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-    import probe_thinking
+def test_prices_are_read_when_needed_and_follow_the_file(tmp_path, monkeypatch):
+    path = tmp_path / "own_prices.json"
+    write_prices(path, {"M": (1.0, 2.0)})
+    monkeypatch.setattr(api_model, "PRICES_PATH", path)
+    assert api_model.price_of("M") == (1.0, 2.0)
+    write_prices(path, {"M": (3.0, 4.0)})
+    os.utime(path, ns=(time.time_ns() + 10**9, time.time_ns() + 10**9))
+    assert api_model.price_of("M") == (3.0, 4.0)
 
-    assert api_model.PRICES_THB_PER_M == probe_thinking.PRICES_THB_PER_M
+
+def test_a_missing_prices_file_is_a_reported_problem_not_an_import_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_model, "PRICES_PATH", tmp_path / "absent.json")
+    assert "config/prices.json not found" in api_model.price_problem(MODEL)
+    with pytest.raises(ValueError, match="not found"):
+        api_model.SpendGuard(MODEL, 5.0)
+
+
+def test_a_malformed_prices_file_is_a_reported_problem(tmp_path, monkeypatch):
+    path = tmp_path / "bad.json"
+    path.write_text('{"models": {"M": {"input": "x"}}}', encoding="utf-8")
+    monkeypatch.setattr(api_model, "PRICES_PATH", path)
+    assert "config/prices.json is malformed" in api_model.price_problem("M")
+
+
+def test_importing_api_model_needs_no_prices_file(tmp_path):
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+    code = "import sys; sys.path.insert(0, sys.argv[1]); import api_model; api_model.PRICES_PATH = api_model.Path(sys.argv[2]); print(api_model.price_problem('x'))"
+    done = subprocess.run([sys.executable, "-I", "-c", code, str(scripts), str(tmp_path / "absent.json")], capture_output=True, text=True)
+    assert done.returncode == 0 and "not found" in done.stdout
 
 
 def test_spend_guard_refuses_an_unpriced_model_and_a_bad_limit():

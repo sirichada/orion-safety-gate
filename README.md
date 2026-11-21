@@ -135,6 +135,7 @@ When `th_text` needs review, its details hold the 30 sampled flagged replies wit
 
 - `config/thresholds.json`: per case the pass mark, minimum scored count, maximum excluded share, `direction`, the three served models' scores (`served`), a short `source`, and `needs_review` for `th_text`. A malformed entry is refused before a run.
 - `config/generation.json`: token caps per case and per model, and each API model's sampling protocol.
+- `config/prices.json` (git-ignored; copy `config/prices.example.json`): each API model's input and output price in THB per 1M tokens, which the `--max-thb` spend limit needs. It is read only when an API run needs a price, so local `--backend hf` runs, `rescore`, `report` and `review` work without it. An API run, or an API `--dry-run`, with the file missing or a model unpriced is refused with a message saying so.
 
 ## Tests
 

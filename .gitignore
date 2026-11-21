@@ -220,6 +220,9 @@ __marimo__/
 # Repo-specific
 .DS_Store
 
+# Per-model API prices; copy config/prices.example.json to config/prices.json
+config/prices.json
+
 # Fetched benchmark data (re-downloaded via scripts/fetch_data.sh)
 data/
 

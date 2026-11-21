@@ -60,13 +60,6 @@ LOG_DIR = REPO_ROOT / "runs" / "logs"
 
 MODEL_ORDER = ("Mango 1.5-9B", "Qwen 3.8-Flash-Next", "Qwen 3.8-27B")
 
-# THB per 1M tokens (input, output), as of 2026-10-13.
-PRICES_THB_PER_M = {
-    "Mango 1.5-9B": (1.00, 1.00),
-    "Qwen 3.8-27B": (1.00, 1.00),
-    "Qwen 3.8-Flash-Next": (1.00, 1.00),
-}
-
 TARGET_CELLS = (
     ("stdin", "easy"),
     ("stdin", "medium"),
@@ -168,14 +161,8 @@ def estimate_input_tokens(text: str) -> int:
     return math.ceil(len(text) / 2.0) + 16
 
 
-def worst_case_thb(model: str, est_input_tokens: int, max_tokens: int) -> float:
-    price_in, price_out = PRICES_THB_PER_M[model]
-    return (est_input_tokens * price_in + max_tokens * price_out) / 1_000_000
-
-
-def usage_thb(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    price_in, price_out = PRICES_THB_PER_M[model]
-    return (prompt_tokens * price_in + completion_tokens * price_out) / 1_000_000
+worst_case_thb = api_model.worst_case_thb
+usage_thb = api_model.usage_thb
 
 
 class SpendGuard:
@@ -623,10 +610,11 @@ def resolve_models(requested: list[str] | None) -> tuple[list[str], list[dict]]:
     wanted = list(requested) if requested else list(MODEL_ORDER)
     runnable, refused = [], []
     for model in wanted:
-        if model in PRICES_THB_PER_M:
+        problem = api_model.price_problem(model)
+        if problem is None:
             runnable.append(model)
         else:
-            refused.append({"model": model, "reason": "no price in PRICES_THB_PER_M; refusing to run without a spend bound"})
+            refused.append({"model": model, "reason": problem})
     return runnable, refused
 
 
@@ -1285,7 +1273,6 @@ def cmd_run(args, backend_factory=make_http_backend, key_reader=api_model._read_
                     "args": {k: v for k, v in vars(args).items() if k not in ("func",)},
                     "dataset_revision": manifest.get("dataset_revision"),
                     "manifest_problems": [p["question_id"] for p in manifest["problems"]],
-                    "prices_thb_per_m": PRICES_THB_PER_M,
                     "script_sha256": file_sha256(Path(__file__)),
                     "suite_git": run_config.git_state(REPO_ROOT),
                     "base_url": api_model.BASE_URL_RECORDED,

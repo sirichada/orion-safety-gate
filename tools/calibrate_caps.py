@@ -134,7 +134,7 @@ def summarize_case(rows: list[dict], calibration_cap: int) -> dict:
 
 
 def estimate_full_run(summary: dict, prompts: list[str], model: str, cap: int | None, concurrency: int) -> dict:
-    price_in, price_out = api_model.PRICES_THB_PER_M[model]
+    price_in, price_out = api_model.price_of(model)
     n = len(prompts)
     estimate = {"n_prompts": n, "expected_thb": None, "worst_case_thb_at_proposed_cap": None, "expected_hours": None}
     if summary["mean_prompt_tokens"] is not None and summary["mean_completion_tokens"] is not None:
@@ -210,8 +210,9 @@ def main(argv: list[str] | None = None, make_generate=api_model.make_api_generat
     unknown = [c for c in cases if c not in PROMPT_FILES]
     if unknown:
         sys.exit(f"unknown case(s): {', '.join(unknown)}; known: {', '.join(PROMPT_FILES)}")
-    if args.model not in api_model.PRICES_THB_PER_M:
-        sys.exit(f"no price for model {args.model!r}; refusing to run without a spend bound")
+    problem = api_model.price_problem(args.model)
+    if problem:
+        sys.exit(problem)
     if not 1 <= args.api_concurrency <= run_config.API_CONCURRENCY_CEILING:
         sys.exit(f"--api-concurrency must be between 1 and {run_config.API_CONCURRENCY_CEILING}")
     if args.max_thb is None and not args.dry_run:
@@ -282,7 +283,7 @@ def run(args, cases: list[str], stamp: str, make_generate) -> int:
     if not plan:
         sys.exit("nothing to send: no prompts selected")
 
-    price_in, price_out = api_model.PRICES_THB_PER_M[args.model]
+    price_in, price_out = api_model.price_of(args.model)
     sample_worst = sum(
         api_model.worst_case_thb(args.model, api_model.estimate_input_tokens(p), args.max_new_tokens)
         for case in plan.values()

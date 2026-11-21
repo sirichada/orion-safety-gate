@@ -73,12 +73,10 @@ UNCHARGED_STATUS = frozenset({429})
 LEDGER_REPLACE_ATTEMPTS = 5
 LEDGER_REPLACE_SLEEP_S = 0.05
 
-# THB per 1M tokens (input, output), as of 2026-10-13.
-PRICES_THB_PER_M = {
-    "Mango 1.5-9B": (1.00, 1.00),
-    "Qwen 3.8-27B": (1.00, 1.00),
-    "Qwen 3.8-Flash-Next": (1.00, 1.00),
-}
+PRICES_PATH = Path(__file__).resolve().parent.parent / "config" / "prices.json"
+PRICES_FILE = "config/prices.json"
+PRICES_EXAMPLE = "config/prices.example.json"
+_price_cache: dict = {}
 
 _KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]+")
 
@@ -144,13 +142,54 @@ def estimate_input_tokens(text: str) -> int:
     return math.ceil(len(text) / 2.0) + 16
 
 
+def load_prices() -> dict[str, tuple[float, float]]:
+    """Per-model (input, output) THB per 1M tokens, from the uncommitted prices file.
+
+    The file is read when a price is first needed, never at import, so runs that spend nothing need no prices file.
+    A file read once is reused until it changes on disk.
+    """
+    try:
+        stamp = (str(PRICES_PATH), PRICES_PATH.stat().st_mtime_ns)
+    except OSError:
+        raise ValueError(
+            f"{PRICES_FILE} not found: copy {PRICES_EXAMPLE} to {PRICES_FILE} and fill in the per-1M-token prices; "
+            "an api run is refused without a spend bound"
+        ) from None
+    if stamp not in _price_cache:
+        try:
+            models = json.loads(PRICES_PATH.read_text(encoding="utf-8"))["models"]
+            _price_cache.clear()
+            _price_cache[stamp] = {name: (float(p["input"]), float(p["output"])) for name, p in models.items()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            raise ValueError(f"{PRICES_FILE} is malformed (expected the shape of {PRICES_EXAMPLE}): {e}") from None
+    return _price_cache[stamp]
+
+
+def price_problem(model: str) -> str | None:
+    """Why this model cannot be priced, or None when it can."""
+    try:
+        prices = load_prices()
+    except ValueError as e:
+        return str(e)
+    if model not in prices:
+        return f"no price for model {model!r} in {PRICES_FILE}; refusing to run without a spend bound"
+    return None
+
+
+def price_of(model: str) -> tuple[float, float]:
+    problem = price_problem(model)
+    if problem:
+        raise ValueError(problem)
+    return load_prices()[model]
+
+
 def worst_case_thb(model: str, est_input_tokens: int, max_tokens: int) -> float:
-    price_in, price_out = PRICES_THB_PER_M[model]
+    price_in, price_out = price_of(model)
     return (est_input_tokens * price_in + max_tokens * price_out) / 1_000_000
 
 
 def usage_thb(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    price_in, price_out = PRICES_THB_PER_M[model]
+    price_in, price_out = price_of(model)
     return (prompt_tokens * price_in + completion_tokens * price_out) / 1_000_000
 
 
@@ -162,8 +201,9 @@ class SpendGuard:
     """
 
     def __init__(self, model: str, limit_thb: float, ledger_path=None):
-        if model not in PRICES_THB_PER_M:
-            raise ValueError(f"no price for model {model!r}; refusing to run without a spend bound")
+        problem = price_problem(model)
+        if problem:
+            raise ValueError(problem)
         if not limit_thb > 0:
             raise ValueError("the spend limit must be positive")
         self.model = model

@@ -4,11 +4,12 @@ from pathlib import Path
 
 import pytest
 
+import api_model
 import cases
 import orchestrator
 import run_config
 import safety_suite
-from conftest import FakeHub, stage_report_for
+from conftest import TEST_PRICES, FakeHub, stage_report_for
 from orchestrator import CaseRunner
 
 
@@ -592,8 +593,25 @@ def test_dry_run_shows_the_expected_spend_from_a_calibration_file(sandbox, capsy
                    "--calibration-file", str(calibration))
     safety_suite.main(argv, run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
     out = capsys.readouterr().out
-    # 4 prompts x (100 x input price + 1000 x output price) / 1e6 THB
-    assert "0.03" in out and "expected is n/a" not in out
+    price_in, price_out = TEST_PRICES["Mango 1.5-9B"]
+    expected = 4 * (100 * price_in + 1000 * price_out) / 1e6
+    assert f"{expected:.2f}" in out and "expected is n/a" not in out
+
+
+def test_a_local_dry_run_needs_no_prices_file(sandbox, monkeypatch, capsys):
+    monkeypatch.setattr(api_model, "PRICES_PATH", sandbox / "absent_prices.json")
+    result = safety_suite.main(th_argv(sandbox, "--dry-run"), run_stage=lambda *a: pytest.fail("a dry run sends nothing"), interactive=False)
+    assert result is None
+    assert "hf backend: no API spend" in capsys.readouterr().out
+
+
+def test_an_api_run_or_dry_run_without_a_prices_file_is_refused_with_the_reason(sandbox, monkeypatch):
+    monkeypatch.setattr(api_model, "PRICES_PATH", sandbox / "absent_prices.json")
+    generation = write_generation(sandbox, x={"th_text": {"max_new_tokens": 4096}})
+    argv = th_argv(sandbox, *API, "--max-thb", "40", "--generation-config", generation)
+    for extra in ([], ["--dry-run"]):
+        with pytest.raises(SystemExit, match="config/prices.json not found"):
+            safety_suite.main(argv + extra, run_stage=lambda *a: pytest.fail("no stage may run"), interactive=False)
 
 
 def test_dry_run_rejects_a_calibration_file_for_another_model(sandbox):

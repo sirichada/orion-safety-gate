@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
+import api_model  # noqa: E402
 import probe_thinking as pt  # noqa: E402
 
 FAKE_KEY = "sk-FAKEKEYFORTESTS0123456789"
@@ -220,11 +221,15 @@ def test_no_usage_counts_worst_case_and_usage_counts_actual(tmp_path):
     assert guard.spent_thb == pytest.approx(sum(r["cost_thb"] for r in state.rows), abs=1e-5)
 
 
-def test_prices_cover_the_three_models():
-    assert set(pt.MODEL_ORDER) == set(pt.PRICES_THB_PER_M)
-    assert pt.PRICES_THB_PER_M["Mango 1.5-9B"] == (1.00, 1.00)
-    assert pt.PRICES_THB_PER_M["Qwen 3.8-27B"] == (1.00, 1.00)
-    assert pt.PRICES_THB_PER_M["Qwen 3.8-Flash-Next"] == (1.00, 1.00)
+def test_every_probe_model_is_priced_by_the_test_prices_file():
+    runnable, refused = pt.resolve_models(None)
+    assert runnable == list(pt.MODEL_ORDER) and refused == []
+
+
+def test_without_a_prices_file_every_model_is_refused_with_the_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_model, "PRICES_PATH", tmp_path / "absent.json")
+    runnable, refused = pt.resolve_models(None)
+    assert runnable == [] and all("config/prices.json not found" in r["reason"] for r in refused)
 
 
 # ---------------------------------------------------------------- behaviour

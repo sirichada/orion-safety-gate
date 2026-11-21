@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 import calibrate_caps as cc  # noqa: E402
 import run_config  # noqa: E402
+from conftest import TEST_PRICES  # noqa: E402
 
 MODEL = "Qwen 3.8-Flash-Next"
 
@@ -61,11 +62,12 @@ def test_case_summary_with_a_cut_off_proposes_nothing():
 def test_full_run_estimate_uses_prices_prompt_count_and_latency():
     summary = {"mean_prompt_tokens": 100, "mean_completion_tokens": 1000, "mean_latency_s": 30.0}
     estimate = cc.estimate_full_run(summary, ["x" * 100] * 600, MODEL, 4096, 3)
-    per_prompt = (100 * 1.0 + 1000 * 1.0) / 1e6
+    price_in, price_out = TEST_PRICES[MODEL]
+    per_prompt = (100 * price_in + 1000 * price_out) / 1e6
     assert estimate["n_prompts"] == 600
     assert estimate["expected_thb"] == pytest.approx(per_prompt * 600, abs=1e-4)
     assert estimate["expected_hours"] == pytest.approx(600 * 30 / 3 / 3600, abs=0.01)
-    worst_each = ((100 / 2 + 16) * 1.0 + 4096 * 1.0) / 1e6
+    worst_each = ((100 / 2 + 16) * price_in + 4096 * price_out) / 1e6
     assert estimate["worst_case_thb_at_proposed_cap"] == pytest.approx(worst_each * 600, abs=1e-3)
     assert cc.estimate_full_run(summary, ["x"], MODEL, None, 3)["worst_case_thb_at_proposed_cap"] is None
 

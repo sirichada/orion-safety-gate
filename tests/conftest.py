@@ -21,6 +21,27 @@ def no_real_dotenv(monkeypatch, tmp_path):
     monkeypatch.setenv(api_model.BASE_URL_ENV, "https://api.example/v1")
 
 
+# Synthetic THB per 1M tokens (input, output); not any provider's prices.
+TEST_PRICES = {"Mango 1.5-9B": (1.5, 9.0), "Qwen 3.8-27B": (2.5, 11.0), "Qwen 3.8-Flash-Next": (3.5, 13.0)}
+
+
+def write_prices(path, prices=None):
+    import json
+
+    models = {name: {"input": i, "output": o} for name, (i, o) in (prices or TEST_PRICES).items()}
+    path.write_text(json.dumps({"unit": "THB per 1M tokens", "models": models}), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def test_prices_file(monkeypatch, tmp_path):
+    """Tests price models from a synthetic file; a clone has no real prices file."""
+    import api_model
+
+    path = tmp_path / "prices.json"
+    write_prices(path)
+    monkeypatch.setattr(api_model, "PRICES_PATH", path)
+
+
 @pytest.fixture(autouse=True)
 def lid_available(monkeypatch):
     """Tests run on machines without fastText or the language-ID model; the real check has its own tests."""
