@@ -56,3 +56,26 @@ def test_no_key_anywhere_exits_without_naming_a_value(monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         api_model._read_api_key()
     assert NAME in str(exc.value)
+
+
+def test_base_url_comes_from_the_dotenv_before_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv(api_model.BASE_URL_ENV, "https://from-env.example/v1")
+    use_dotenv(monkeypatch, tmp_path, f"{api_model.BASE_URL_ENV}=https://from-dotenv.example/v1/\n")
+    assert api_model.read_base_url() == "https://from-dotenv.example/v1"
+
+
+def test_base_url_falls_back_to_the_environment(monkeypatch):
+    monkeypatch.setenv(api_model.BASE_URL_ENV, "https://from-env.example/v1")
+    assert api_model.read_base_url() == "https://from-env.example/v1"
+
+
+def test_no_base_url_anywhere_exits_naming_the_variable(monkeypatch):
+    monkeypatch.delenv(api_model.BASE_URL_ENV, raising=False)
+    with pytest.raises(SystemExit) as exc:
+        api_model.read_base_url()
+    assert api_model.BASE_URL_ENV in str(exc.value)
+
+
+def test_the_module_holds_no_built_in_address():
+    assert not hasattr(api_model, "BASE_URL")
+    assert "://" not in api_model.BASE_URL_RECORDED

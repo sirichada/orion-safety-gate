@@ -172,7 +172,7 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
                 "libraries": run_config.library_versions(("httpx",)),
                 "gpu": run_config.unavailable("api backend"),
                 "api": {
-                    "base_url": api_model.BASE_URL,
+                    "base_url": api_model.BASE_URL_RECORDED,
                     "reported_model": run_config.unavailable("deferred"),
                     "system_fingerprint": run_config.unavailable("deferred"),
                 },

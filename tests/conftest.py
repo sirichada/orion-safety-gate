@@ -18,6 +18,7 @@ def no_real_dotenv(monkeypatch, tmp_path):
     import api_model
 
     monkeypatch.setattr(api_model, "DOTENV_PATH", tmp_path / "absent.env")
+    monkeypatch.setenv(api_model.BASE_URL_ENV, "https://api.example/v1")
 
 
 @pytest.fixture(autouse=True)

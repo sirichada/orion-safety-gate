@@ -22,8 +22,9 @@ input plus the full token cap at the output price) must fit under the limit, and
 fails after it may have run is charged that worst case. The guard's running total is kept in a
 ledger file shared by every case of a run.
 
-Requires ORION_API_KEY in a .env file in the repo root (preferred) or in the environment. The key is only ever placed in the Authorization
-header of the HTTP client and is never printed or written anywhere.
+Requires ORION_API_KEY and ORION_BASE_URL (the API address, with its /v1 prefix) in a .env file in the repo root (preferred) or in the
+environment. The key is only ever placed in the Authorization header of the HTTP client and is never printed or written anywhere; run
+reports record the address as "(set by ORION_BASE_URL)".
 
 Usage:
     python api_model.py    # prints the model ids the endpoint serves
@@ -47,7 +48,9 @@ import httpx
 
 from run_config import API_CONCURRENCY_CEILING, DEFAULTS, BudgetExceeded
 
-BASE_URL = "https://api.orion.cmkl.ai/v1"
+BASE_URL_ENV = "ORION_BASE_URL"
+# What run reports record in place of the address.
+BASE_URL_RECORDED = f"(set by {BASE_URL_ENV})"
 API_KEY_ENV = "ORION_API_KEY"
 DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -118,6 +121,15 @@ def _read_api_key() -> str:
         sys.exit(f"{API_KEY_ENV} is not set. Put {API_KEY_ENV}=... in {DOTENV_PATH.name} in the repo root, "
                  "or set it in the environment, before using --backend api.")
     return key
+
+
+def read_base_url() -> str:
+    """The API base URL, including its /v1 prefix: from the .env file, else the environment, never a built-in default."""
+    url = _dotenv_value(DOTENV_PATH, BASE_URL_ENV) or os.environ.get(BASE_URL_ENV)
+    if not url:
+        sys.exit(f"{BASE_URL_ENV} is not set. Put {BASE_URL_ENV}=... in {DOTENV_PATH.name} in the repo root, "
+                 "or set it in the environment, before using --backend api.")
+    return url.rstrip("/")
 
 
 def _backoff_s(attempt: int) -> float:
@@ -325,7 +337,7 @@ def list_models(client: httpx.Client) -> list[str] | None:
 def make_api_generate(
     model_id: str,
     concurrency: int = DEFAULTS["api_concurrency"],
-    base_url: str = BASE_URL,
+    base_url: str | None = None,
     no_answer_retries: int = DEFAULTS["no_answer_retries"],
     spend: SpendGuard | None = None,
     transport: httpx.BaseTransport | None = None,
@@ -339,7 +351,7 @@ def make_api_generate(
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
     client = httpx.Client(
-        base_url=base_url,
+        base_url=base_url or read_base_url(),
         headers={"Authorization": f"Bearer {_read_api_key()}"},
         timeout=httpx.Timeout(READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
         transport=transport,
@@ -451,5 +463,5 @@ def make_api_generate(
 
 
 if __name__ == "__main__":
-    with httpx.Client(base_url=BASE_URL, headers={"Authorization": f"Bearer {_read_api_key()}"}) as c:
+    with httpx.Client(base_url=read_base_url(), headers={"Authorization": f"Bearer {_read_api_key()}"}) as c:
         print(list_models(c))

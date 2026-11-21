@@ -52,9 +52,10 @@ Create a `.env` file in the repo root, or export the variable in your shell:
 
 ```bash
 ORION_API_KEY=<your key>
+ORION_BASE_URL=<the API address, ending in /v1>
 ```
 
-The key is only ever sent in the `Authorization` header. `.env` is git-ignored. Never commit it.
+The key is only ever sent in the `Authorization` header, and run reports record the address as `(set by ORION_BASE_URL)`. `.env` is git-ignored. Never commit it.
 
 ## Running the suite
 

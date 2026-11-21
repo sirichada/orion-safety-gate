@@ -165,7 +165,7 @@ def test_api_backend_rejects_hf_only_settings(wrapper):
 class FakeApi:
     """Stands in for scripts/api_model.py: records calls, and can fail prompts or run out of budget."""
 
-    BASE_URL = "https://api.example/v1"
+    BASE_URL_RECORDED = "(set by ORION_BASE_URL)"
 
     def __init__(self):
         self.calls = []
@@ -225,7 +225,7 @@ class FakeApi:
             generate.meta, generate.finish_reasons, generate.attempts = [], [], []
             return generate
 
-        module = SimpleNamespace(BASE_URL=self.BASE_URL, make_api_generate=make_api_generate, SpendGuard=SpendGuard)
+        module = SimpleNamespace(BASE_URL_RECORDED=self.BASE_URL_RECORDED, make_api_generate=make_api_generate, SpendGuard=SpendGuard)
         monkeypatch.setitem(sys.modules, "api_model", module)
         return self
 
@@ -243,7 +243,7 @@ def test_api_backend_reports_server_side_values_as_unavailable(wrapper, fake_api
     wrapper.run("--out", str(wrapper.out), "--backend", "api", "--max-thb", "5")
     report = run_config.read_stage_report(wrapper.out)
     assert report["precision"]["available"] is False
-    assert report["provenance"]["api"]["base_url"] == "https://api.example/v1"
+    assert report["provenance"]["api"]["base_url"] == "(set by ORION_BASE_URL)"
     assert report["n_truncated_inputs"]["available"] is False
     assert report["args"]["api_concurrency"] == 3 and report["args"]["no_answer_retries"] == 0
     assert report["args"]["stream"] is True

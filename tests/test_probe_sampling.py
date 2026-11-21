@@ -317,8 +317,8 @@ def test_model_info_records_any_status_scrubs_key_and_stays_on_api_host(tmp_path
 
     code, out_root = run_cmd(tmp_path, monkeypatch, pt.Backend(send, lambda: None, get), [])
     assert code == 0
-    assert calls == list(pt.MODEL_INFO_URLS)
-    assert all(url.startswith("https://api.orion.cmkl.ai/") for url in calls)
+    assert calls == list(pt.model_info_urls())
+    assert all(url.startswith("https://api.example/") for url in calls)
     info = json.loads(next(out_root.rglob("model_info.json")).read_text(encoding="utf-8"))
     assert sorted(v["status"] for v in info.values()) == [403, 404]
     assert any(v["truncated"] for v in info.values())

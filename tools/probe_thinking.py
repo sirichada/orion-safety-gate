@@ -300,8 +300,9 @@ def assemble_stream(lines: list[str]) -> tuple[dict, dict]:
 def make_http_backend(key: str, read_timeout_s: float) -> tuple[Backend, Callable[[], None]]:
     import httpx
 
+    base_url = api_model.read_base_url()
     client = httpx.Client(
-        base_url=api_model.BASE_URL,
+        base_url=base_url,
         headers={"Authorization": f"Bearer {key}"},
         timeout=httpx.Timeout(read_timeout_s, connect=CONNECT_TIMEOUT_S),
     )
@@ -353,7 +354,7 @@ def make_http_backend(key: str, read_timeout_s: float) -> tuple[Backend, Callabl
         except (httpx.TimeoutException, httpx.TransportError):
             return None
 
-    api_host = httpx.URL(api_model.BASE_URL).host
+    api_host = httpx.URL(base_url).host
 
     def get(url: str) -> tuple[int | None, str]:
         # Lookups are limited to the API host the key belongs to.
@@ -1170,16 +1171,15 @@ class Tee:
         self.file.close()
 
 
-MODEL_INFO_URLS = (
-    api_model.BASE_URL.removesuffix("/v1") + "/model/info",
-    api_model.BASE_URL + "/model/info",
-)
+def model_info_urls() -> tuple[str, str]:
+    base_url = api_model.read_base_url()
+    return base_url.removesuffix("/v1") + "/model/info", base_url + "/model/info"
 
 
 def fetch_model_info(get: Callable[[str], tuple[int | None, str]]) -> dict:
     """Read-only lookups of the gateway's model info; whatever comes back is recorded, truncated."""
     found = {}
-    for url in MODEL_INFO_URLS:
+    for url in model_info_urls():
         status, body = get(url)
         found[url] = {
             "status": status,
@@ -1213,7 +1213,7 @@ def cmd_run(args, backend_factory=make_http_backend, key_reader=api_model._read_
     if args.dry_run:
         print_plan(models, planned, manifest, args.max_tokens, args.max_thb, stream=args.stream)
         if args.model_info:
-            print(f"model info: would GET {MODEL_INFO_URLS[0]} and {MODEL_INFO_URLS[1]} (not performed in a dry run)")
+            print(f"model info: would GET /model/info under the {api_model.BASE_URL_ENV} address, with and without /v1 (not performed in a dry run)")
         print("dry run: no key read, no network call, nothing written")
         return 0
 
@@ -1288,7 +1288,7 @@ def cmd_run(args, backend_factory=make_http_backend, key_reader=api_model._read_
                     "prices_thb_per_m": PRICES_THB_PER_M,
                     "script_sha256": file_sha256(Path(__file__)),
                     "suite_git": run_config.git_state(REPO_ROOT),
-                    "base_url": api_model.BASE_URL,
+                    "base_url": api_model.BASE_URL_RECORDED,
                 },
                 scrub,
             )
