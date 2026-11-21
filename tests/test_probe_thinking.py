@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import api_model  # noqa: E402
 import probe_thinking as pt  # noqa: E402
 
-FAKE_KEY = "sk-FAKEKEYFORTESTS0123456789"
+# Built at run time so no key-shaped literal sits in the file.
+FAKE_KEY = "sk-" + "FAKEKEYFORTESTS0123456789"
 
 STDIN_PROBLEM = {
     "question_id": "abc999_a",

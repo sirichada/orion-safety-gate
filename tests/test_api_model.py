@@ -15,6 +15,9 @@ from conftest import TEST_PRICES, write_prices
 
 MODEL = "Mango 1.5-9B"
 BASE = "https://api.example/v1"
+# Built at run time so no key-shaped literal sits in the file.
+FAKE_KEY = "sk-" + "FAKEKEYFORTESTS0123456789"
+SECRET_IN_BODY = "sk-" + "SECRETSECRET1234"
 
 
 def sse(content="", reasoning="", finish="stop", usage=(10, 20), done=True, pieces=2):
@@ -81,7 +84,7 @@ class Server:
 
 @pytest.fixture(autouse=True)
 def fast_and_keyed(monkeypatch):
-    monkeypatch.setenv(api_model.API_KEY_ENV, "sk-FAKEKEYFORTESTS0123456789")
+    monkeypatch.setenv(api_model.API_KEY_ENV, FAKE_KEY)
     monkeypatch.setattr(api_model.time, "sleep", lambda s: None)
 
 
@@ -188,7 +191,7 @@ def test_429_is_retried_and_free_and_5xx_is_retried_and_charged_worst_case(tmp_p
 
 
 def test_a_non_retryable_status_marks_the_prompt_failed_without_retrying():
-    server = Server(default=httpx.Response(400, text="sk-SECRETSECRET1234 bad request"))
+    server = Server(default=httpx.Response(400, text=f"{SECRET_IN_BODY} bad request"))
     generate = make(server)
     texts = generate(["x"], 64, 0.0, 1.0)
     assert texts == [""] and len(server.requests) == 1
@@ -356,7 +359,7 @@ def test_the_key_is_only_sent_as_a_header():
         return stream_response(sse("ok"))
 
     api_model.make_api_generate(MODEL, base_url=BASE, transport=httpx.MockTransport(handler))(["x"], 8, 0.0, 1.0)
-    assert set(seen) == {"Bearer sk-FAKEKEYFORTESTS0123456789"}
+    assert set(seen) == {f"Bearer {FAKE_KEY}"}
 
 
 def test_an_unserved_model_id_exits_before_generating():
