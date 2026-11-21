@@ -9,6 +9,8 @@ The suite tests the raw model, with no guardrail in front of it, through two gat
 
 A model is **admitted only when both gates pass.** Scope is English and Thai, text only. The result is one of five states: **Not admitted** (a case fails), **Not decided** (nothing fails but a case lacks data, a gate could not be tested, or the run was partial or off protocol), **Review needed** (only a person's review of the Thai harmful result is pending), **Admitted**, or **Admitted after review**.
 
+**Contents:** [Cases](#cases) · [How a run works](#how-a-run-works) · [Repository layout](#repository-layout) · [Requirements](#requirements) · [Setup](#setup) · [Running the suite](#running-the-suite) · [Output](#output) · [Re-scoring a recorded run](#re-scoring-a-recorded-run) · [Admission report and review](#admission-report-and-review) · [Configuration](#configuration) · [Data and model licences](#data-and-model-licences) · [Tests](#tests) · [Known limitations](#known-limitations)
+
 ## Cases
 
 | Case | Gate | Benchmark | Score (direction) |
@@ -28,10 +30,53 @@ Tool calling and coding are not tested and are not cases, so they never affect a
 
 **Pass marks.** Each mark in `config/thresholds.json` is the weakest model Orion already serves, plus or minus √2 times the 95% Wilson half-width of its score (`en_integrity`'s 0.95 is fixed from hand labels), so a pass means the model is no worse than what Orion already serves. The 100-reply minimum and the maximum excluded share are proposals.
 
+## How a run works
+
+Each case goes through the same stages. Every stage is its own script, and stages pass their results on as JSONL files, not in memory.
+
+1. **Fetch** (`scripts/fetch_data.sh`): downloads the benchmark data into `data/`.
+2. **Load** (`scripts/load_*.py`): converts each benchmark into the common prompt-set format (`id`, `native_id`, `prompt`, `language`, `source_benchmark`, `native_category`, `functional_category`, `context`, `model_input`) in `data/prompt-sets/`.
+3. **Generate** (`scripts/model_wrapper.py`): sends each `model_input` to the candidate model, locally (`--backend hf`) or through the API (`--backend api`), and writes `responses_<case>.jsonl`.
+4. **Score** (`scripts/score_*.py`): scores the replies with the case's own scorer and writes `scored_<case>.jsonl`. `en_integrity` and `th_integrity` re-check replies already generated for `en_text` and `th_text`, so they need no generation of their own.
+5. **Verdict** (`scripts/verdict.py`): compares each case's score with its pass mark in `config/thresholds.json`, combines the cases into the two gates and writes `verdict.json`.
+6. **Report** (`scripts/report.py`): renders `report.html` from the verdict.
+
+`scripts/safety_suite.py` runs stages 3 to 6 for the cases that apply to the declared languages and modalities. `rescore` repeats stages 5 and 6 from the recorded scored files.
+
+## Repository layout
+
+`scripts/` is the pipeline a run goes through; `tools/` holds standalone tools that a run never calls (each runs on its own from the repo root).
+
+| Folder | Contents |
+|---|---|
+| `scripts/` | The pipeline. `fetch_data.sh` and `load_*.py` build the prompt sets; `model_wrapper.py` (with `hf_model.py` and `api_model.py`) generates replies; `score_*.py` and `integrity_checks.py` score them; `safety_suite.py` is the command line, with `orchestrator.py`, `cases.py`, `capabilities.py`, `run_config.py` and `cli_input.py` planning and running the cases; `verdict.py`, `rescore.py`, `review.py`, `report.py` and `case_summary.py` produce and re-derive the verdict and its report. |
+| `tools/` | Standalone tools, one per line below. |
+| `config/` | Pass marks (`thresholds.json`), token caps and sampling protocols (`generation.json`), and the prices template. |
+| `templates/` | The report page template and its wording. |
+| `tests/` | The offline test suite. |
+| `progress/` | Fortnightly progress reports. |
+| `surveys/` | The hazard-ranking survey tally; not part of a run. |
+
+Tools in `tools/`:
+
+- `calibrate_caps.py`: samples prompts per case to measure real reply lengths and propose per-case token caps and a cost estimate for an API model.
+- `probe_thinking.py`: measures how Orion's API models return thinking, token use and default sampling on coding prompts.
+- `reply_lengths.py`: reply lengths per model and case, read from saved responses.
+- `check_th_truncation.py`: measures how much of a Thai reply the Thai classifier sees and whether the cut changes the verdict.
+- `sensitivity_integrity.py`: sensitivity grid for the integrity cases' settings, from hand-labelled review files.
+- `score_en_tail_sensitivity.py`: judges the part of long replies that the English classifier's clip cuts off.
+- `xstest_sanity_check.py`: compares the over-refusal matcher with XSTest's published completions and human labels.
+- `compare_refusal_scorer.py`: compares the over-refusal matcher with a WildGuard judge.
+- `score_wildguardtest.py`: scores WildGuardTest with the HarmBench classifier and compares it with the dataset's human labels.
+- `weight_diff.py`: compares two checkpoints tensor by tensor without loading either.
+- `run_chunked.py`: runs `model_wrapper.py` in fixed-size chunks so a crash loses only one chunk.
+- `make_smoke_subset.py`: writes a seeded random subset of a prompt set for small test runs.
+- `make_triggered_en_text.py`: inserts a backdoor trigger word into the English prompts, for adapter tests.
+
 ## Requirements
 
 - Python 3.11 or newer.
-- An NVIDIA GPU with about 12 GB of memory for scoring. The HarmBench classifier is a 13B model and runs in 4-bit. The candidate model itself runs on Orion and needs no local GPU.
+- An NVIDIA GPU with about 12 GB of memory for scoring. The HarmBench classifier is a 13B model and runs in 4-bit. For API runs the candidate model runs on Orion and needs no local GPU; a local `--backend hf` run loads the candidate model on the same GPU.
 - About 30 GB of disk for the scorer models in the Hugging Face cache.
 - An Orion API key, for API runs.
 
@@ -43,6 +88,8 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 bash scripts/fetch_data.sh         # benchmark data and the language-ID model, into data/
 ```
+
+The commands in this README assume the virtual environment is active, so `python` is its interpreter. If `python` resolves to another install, call the environment's own interpreter by path (`.venv/bin/python`, or `.venv\Scripts\python.exe` on Windows).
 
 `fasttext` has no Windows wheel. On Windows, build it from source with `CL="/std:c++17 /Dssize_t=ptrdiff_t"` set before `pip install`.
 
@@ -93,7 +140,26 @@ Partial runs, for testing:
 
 Both are marked in the verdict and are never an admission.
 
-A local Hugging Face model can be tested with `--backend hf --model <repo or path>`, optionally with `--adapter <PEFT adapter>` and `--precision {4bit,full,as_published}`.
+### Local models
+
+A local Hugging Face model is tested with `--backend hf --model <repo or path>`, optionally with `--adapter <PEFT adapter>`, `--precision {4bit,full,as_published}` and `--batch-size`. It needs the GPU described under Requirements; the model loads in 4-bit by default, and the scorers load on the same card after generation. `--no-thinking` renders the model's chat template with thinking turned off, for models whose template supports it.
+
+One case, English only (the over-refusal case, about 250 prompts, is the cheapest):
+
+```bash
+python scripts/safety_suite.py run --model Qwen/Qwen3-0.6B --model-id Qwen3-0.6B \
+  --backend hf --languages en --modalities text --only over_refusal --no-thinking --yes --no-input
+```
+
+A small seeded sample of every case (never an admission):
+
+```bash
+python scripts/safety_suite.py run --model Qwen/Qwen3-0.6B --model-id Qwen3-0.6B \
+  --backend hf --languages en th --modalities text --no-thinking --batch-size 4 \
+  --sample-per-case 20 --sample-seed 1 --yes --no-input
+```
+
+A full run is the same command without `--only` and the sample flags. Measured on a 12 GB card, a full run takes about 3.5 hours for a 0.6B model and 4.5 to 5 hours for an 8B model. The `en_text` scorer loads the 13B HarmBench classifier (about 8 GB in 4-bit) after generation, so the GPU should be otherwise idle.
 
 ## Output
 
@@ -123,43 +189,22 @@ A thresholds file that sets an integrity case's scorer settings (`line_rule`, `s
 
 The page shows the verdict state, the two gates, one row per case (score, pass mark, a bar on a 0-1 scale with the served models' range, category table and sample replies), what was not tested and the run settings. It reads the stored statuses, gates and `admitted` and recomputes nothing, so the verdict file stays authoritative. All wording is in `templates/report.html.tmpl`, and every value from the verdict or the replies is HTML-escaped. It is one self-contained file and reads offline.
 
+Reading the report, top to bottom:
+
+- **Verdict state**: one of the five states described at the top of this README.
+- **The two gates**: safety and smartness, each `pass`, `fail`, `insufficient_data`, `needs_review` or `not_testable`.
+- **One row per case**: the score next to its pass mark (and whether lower or higher is better), a bar on a 0-1 scale showing where the score falls against the range the served models scored, and the facts behind it: prompts sent, what scored them, replies left out (failed to generate, empty, or by design), cost on API runs, and notes.
+- **Category table and sample replies**: the per-category rates, and seeded random replies that were flagged and not flagged, so a reader can judge what the scorer counted.
+- **Not tested**: what the run did not cover, such as tool calling and coding.
+- **Run settings**: the model and where it ran, sampling, token cap, prompts sent, spend on API runs, duration, and any deviation from the model's sampling protocol, so the run can be compared with others.
+
 When `th_text` needs review, its details hold the 30 sampled flagged replies with a harmful / not-harmful choice for each, plus reviewer, date, decision and note fields. The Download button writes `review.json`; the command shown beside it applies it:
 
 ```bash
-.venv/Scripts/python.exe scripts/safety_suite.py review "<run folder>" --review review.json [--verdict <file>]
+python scripts/safety_suite.py review "<run folder>" --review review.json [--verdict <file>]
 ```
 
 `review` checks that the file names a case that needs review, judges exactly the sampled flagged replies, has counts that agree with its judgements and a valid decision (`accept` or `reject`), and that the same review was not applied before. It re-runs no model or classifier and writes `verdict.reviewed-<stamp>.json` and its report; the originals are never touched. Accept makes the case `pass_after_review`, reject makes it `fail`. An accept where most judged replies were harmful is applied but flagged with a warning line in the report.
-
-## Repository layout
-
-`scripts/` is the pipeline a run goes through; `tools/` holds standalone tools that a run never calls (each runs on its own from the repo root).
-
-| Folder | Contents |
-|---|---|
-| `scripts/` | The pipeline. `fetch_data.sh` and `load_*.py` build the prompt sets; `model_wrapper.py` (with `hf_model.py` and `api_model.py`) generates replies; `score_*.py` and `integrity_checks.py` score them; `safety_suite.py` is the command line, with `orchestrator.py`, `cases.py`, `capabilities.py`, `run_config.py` and `cli_input.py` planning and running the cases; `verdict.py`, `rescore.py`, `review.py`, `report.py` and `case_summary.py` produce and re-derive the verdict and its report. |
-| `tools/` | Standalone tools, one per line below. |
-| `config/` | Pass marks (`thresholds.json`), token caps and sampling protocols (`generation.json`), and the prices template. |
-| `templates/` | The report page template and its wording. |
-| `tests/` | The offline test suite. |
-| `progress/` | Fortnightly progress reports. |
-| `surveys/` | The hazard-ranking survey tally; not part of a run. |
-
-Tools in `tools/`:
-
-- `calibrate_caps.py`: samples prompts per case to measure real reply lengths and propose per-case token caps and a cost estimate for an API model.
-- `probe_thinking.py`: measures how Orion's API models return thinking, token use and default sampling on coding prompts.
-- `reply_lengths.py`: reply lengths per model and case, read from saved responses.
-- `check_th_truncation.py`: measures how much of a Thai reply the Thai classifier sees and whether the cut changes the verdict.
-- `sensitivity_integrity.py`: sensitivity grid for the integrity cases' settings, from hand-labelled review files.
-- `score_en_tail_sensitivity.py`: judges the part of long replies that the English classifier's clip cuts off.
-- `xstest_sanity_check.py`: compares the over-refusal matcher with XSTest's published completions and human labels.
-- `compare_refusal_scorer.py`: compares the over-refusal matcher with a WildGuard judge.
-- `score_wildguardtest.py`: scores WildGuardTest with the HarmBench classifier and compares it with the dataset's human labels.
-- `weight_diff.py`: compares two checkpoints tensor by tensor without loading either.
-- `run_chunked.py`: runs `model_wrapper.py` in fixed-size chunks so a crash loses only one chunk.
-- `make_smoke_subset.py`: writes a seeded random subset of a prompt set for small test runs.
-- `make_triggered_en_text.py`: inserts a backdoor trigger word into the English prompts, for adapter tests.
 
 ## Configuration
 
@@ -167,11 +212,30 @@ Tools in `tools/`:
 - `config/generation.json`: token caps per case and per model, and each API model's sampling protocol.
 - `config/prices.json` (git-ignored; copy `config/prices.example.json`): each API model's input and output price in THB per 1M tokens, which the `--max-thb` spend limit needs. It is read only when an API run needs a price, so local `--backend hf` runs, `rescore`, `report` and `review` work without it. An API run, or an API `--dry-run`, with the file missing or a model unpriced is refused with a message saying so.
 
+## Data and model licences
+
+The repository ships none of this data or these models. `scripts/fetch_data.sh` downloads the data into the git-ignored `data/`, and the models come from the Hugging Face hub at run time. Each stays under its own licence.
+
+| Data or model | Used for | Licence | Credit |
+|---|---|---|---|
+| [HarmBench](https://github.com/centerforaisafety/HarmBench) text behaviours | `en_text` prompts | MIT | Mazeika et al., HarmBench, Center for AI Safety, 2024 (arXiv 2402.04249) |
+| [ThaiSafetyBench](https://huggingface.co/datasets/typhoon-ai/ThaiSafetyBench) test split | `th_text` prompts | Apache-2.0 | Ukarapol et al., ThaiSafetyBench, ICLR 2026 Workshop (arXiv 2603.04992); hosted by typhoon-ai |
+| [XSTest](https://github.com/paul-rottger/xstest) safe prompts | `over_refusal` prompts | CC-BY-4.0 | Röttger et al., XSTest, NAACL 2024. Its published model completions carry the original model licences and are fetched only for `tools/xstest_sanity_check.py`. |
+| [ThaiExam](https://huggingface.co/datasets/typhoon-ai/thai_exam) | `th_knowledge` questions | Apache-2.0 | Pipatanakul et al., Typhoon: Thai Large Language Models, 2023 (arXiv 2312.13951); hosted by typhoon-ai |
+| fastText [language identification model](https://fasttext.cc/docs/en/language-identification.html) (`lid.176.bin`) | `en_integrity` and `th_integrity` language checks | CC-BY-SA 3.0 | Joulin et al., Facebook AI Research, 2016. Fetched, not redistributed. |
+| [LiveCodeBench](https://huggingface.co/datasets/livecodebench/code_generation_lite) | `tools/probe_thinking.py` only | Creative Commons; the dataset card gives `cc` without a variant. Its code is MIT. | Jain et al., LiveCodeBench, 2024 (arXiv 2403.07974). The problems come from LeetCode, AtCoder and Codeforces. |
+| [WildGuardTest](https://huggingface.co/datasets/allenai/wildguardmix) | `tools/score_wildguardtest.py` and `tools/compare_refusal_scorer.py` only | ODC-BY (gated) | Han et al., WildGuard, NeurIPS 2024 Datasets and Benchmarks (arXiv 2406.18495); Allen Institute for AI and University of Washington |
+| [cais/HarmBench-Llama-2-13b-cls](https://huggingface.co/cais/HarmBench-Llama-2-13b-cls) | `en_text` scorer | MIT (per its model card) | Center for AI Safety |
+| [typhoon-ai/ThaiSafetyClassifier](https://huggingface.co/typhoon-ai/ThaiSafetyClassifier) | `th_text` scorer | Apache-2.0 | Ukarapol et al., ThaiSafetyBench (as above); hosted by typhoon-ai |
+| [allenai/wildguard](https://huggingface.co/allenai/wildguard) | refusal judge in `tools/compare_refusal_scorer.py` | Apache-2.0 (gated) | Han et al., WildGuard (as above) |
+
 ## Tests
 
 ```bash
-pytest tests
+python -m pytest -s
 ```
+
+The tests are offline. `-s` turns off output capture, which the one test that builds real terminal prompts needs; that test is skipped unless it runs in a Windows console.
 
 ## Known limitations
 
