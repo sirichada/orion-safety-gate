@@ -19,19 +19,19 @@ S2 is the main comparison: every window stays at the classifier's training lengt
 of S2 is reported against S0 as a control for the tokenization difference (prompt and reply are
 tokenized separately in S2/S3).
 
-Records come from the scored_th_text.jsonl files of finished suite runs (stored labels, so S0 is
-checked) and from the finished replies in calibration folders (no stored labels).
+Records come from the scored_th_text.jsonl files of finished suite runs given with --runs (stored
+labels, so S0 is checked) and, optionally, from the finished replies in calibration folders given with
+--calibration (raw_th_text.jsonl; no stored labels). Each record is grouped under its model: a run's
+verdict.json model_id, or the folder name when there is none.
 
 Usage (from the repo root, with the repo's .venv python):
-    python tools/check_th_truncation.py --out-dir runs/results/th_truncation_check/<ts>
+    python tools/check_th_truncation.py --runs runs/results/<run folder> [...]         [--calibration runs/results/calibration/<folder> ...] --out-dir runs/results/th_truncation_check/<ts>
 """
 
 from __future__ import annotations
 
 import argparse
-import glob
 import json
-import os
 import statistics
 import sys
 import unicodedata
@@ -44,17 +44,6 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from hf_model import load_sequence_classifier, unload  # noqa: E402
 from score_th_text import CLASSIFIER_MODEL, MAX_LENGTH  # noqa: E402
 
-MODELS = {
-    "Mango 1.5-9B": "Mango_1.5-9B",
-    "Qwen 3.8-27B": "Qwen_3.8-27B",
-    "Qwen 3.8-Flash-Next": "Qwen_3.8-Flash-Next",
-}
-# Calibration folders: first runs, then the reruns of their cut-off prompts.
-CALIBRATION = {
-    "Mango 1.5-9B": ["20261027-103656"],
-    "Qwen 3.8-27B": ["20261027-105504", "20261027-115536"],
-    "Qwen 3.8-Flash-Next": ["20261027-111400", "20261027-125322"],
-}
 MAX_PROMPT_TOKENS = 128  # keeps at least ~126 reply tokens in every window
 SETTINGS = ("S0", "S1", "S2", "S3")
 
@@ -68,28 +57,36 @@ def read_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def collect_records():
+def folder_model(folder: Path) -> str:
+    """The model a run or calibration folder belongs to: its verdict's or calibration's model name, else the folder name."""
+    for name, key in (("verdict.json", "model_id"), ("calibration.json", "model")):
+        path = folder / name
+        if path.is_file():
+            value = json.loads(path.read_text(encoding="utf-8")).get(key)
+            if value:
+                return value
+    return folder.name
+
+
+def collect_records(runs, calibrations):
     """One dict per classifiable reply: model, group, id, prompt, response, stored label (or None)."""
     out = []
-    for model, prefix in MODELS.items():
-        for path in sorted(glob.glob(str(REPO_ROOT / "runs" / "results" / f"{prefix}_2026*" / "scored_th_text.jsonl"))):
-            run = os.path.basename(os.path.dirname(path))
-            for r in read_jsonl(path):
-                if r.get("excluded"):
-                    continue
-                out.append(dict(model=model, group="suite_run", run=run, id=r["id"], prompt=r["prompt"],
-                                response=r["response"], stored=r["label"]))
-    prompts = {r["id"]: r["prompt"] for r in read_jsonl(REPO_ROOT / "data" / "prompt-sets" / "th_text.jsonl")}
-    for model, folders in CALIBRATION.items():
-        for folder in folders:
-            path = REPO_ROOT / "runs" / "results" / "calibration" / folder / "raw_th_text.jsonl"
-            if not path.exists():
+    for folder in map(Path, runs):
+        model = folder_model(folder)
+        for r in read_jsonl(folder / "scored_th_text.jsonl"):
+            if r.get("excluded"):
                 continue
-            for r in read_jsonl(path):
-                if r.get("finish_reason") == "length" or r.get("failed"):
-                    continue
-                out.append(dict(model=model, group="calibration", run=folder, id=r["id"],
-                                prompt=prompts[r["id"].split("__")[0]], response=r["response"], stored=None))
+            out.append(dict(model=model, group="suite_run", run=folder.name, id=r["id"], prompt=r["prompt"],
+                            response=r["response"], stored=r["label"]))
+    if calibrations:
+        prompts = {r["id"]: r["prompt"] for r in read_jsonl(REPO_ROOT / "data" / "prompt-sets" / "th_text.jsonl")}
+    for folder in map(Path, calibrations):
+        model = folder_model(folder)
+        for r in read_jsonl(folder / "raw_th_text.jsonl"):
+            if r.get("finish_reason") == "length" or r.get("failed"):
+                continue
+            out.append(dict(model=model, group="calibration", run=folder.name, id=r["id"],
+                            prompt=prompts[r["id"].split("__")[0]], response=r["response"], stored=None))
     return out
 
 
@@ -175,17 +172,22 @@ def summarise(rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runs", nargs="+", default=[], help="Finished suite run folders holding scored_th_text.jsonl")
+    parser.add_argument("--calibration", nargs="+", default=[], help="Calibration folders holding raw_th_text.jsonl")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--normalize", choices=["none", "NFKC"], default="none",
                         help="Unicode normalization applied before tokenizing (default: none)")
     parser.add_argument("--limit", type=int, default=None, help="Only the first N records (for a quick plumbing check)")
     args = parser.parse_args()
 
-    records = collect_records()
+    if not args.runs and not args.calibration:
+        parser.error("give at least one folder with --runs or --calibration")
+    records = collect_records(args.runs, args.calibration)
     if args.limit:
         records = records[: args.limit]
+    models = sorted({r["model"] for r in records})
     print(f"{len(records)} replies: " + ", ".join(
-        f"{m} {sum(1 for r in records if r['model'] == m and r['group'] == g)} {g}" for m in MODELS for g in ("suite_run", "calibration")))
+        f"{m} {sum(1 for r in records if r['model'] == m and r['group'] == g)} {g}" for m in models for g in ("suite_run", "calibration")))
 
     model, tok = load_sequence_classifier(CLASSIFIER_MODEL)
     try:
@@ -214,7 +216,7 @@ def main():
         model = unload(model)
 
     summary = {}
-    for m in MODELS:
+    for m in models:
         for g in ("suite_run", "calibration"):
             rows = [r for r in records if r["model"] == m and r["group"] == g]
             if rows:
