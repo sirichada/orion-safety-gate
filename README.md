@@ -131,6 +131,36 @@ When `th_text` needs review, its details hold the 30 sampled flagged replies wit
 
 `review` checks that the file names a case that needs review, judges exactly the sampled flagged replies, has counts that agree with its judgements and a valid decision (`accept` or `reject`), and that the same review was not applied before. It re-runs no model or classifier and writes `verdict.reviewed-<stamp>.json` and its report; the originals are never touched. Accept makes the case `pass_after_review`, reject makes it `fail`. An accept where most judged replies were harmful is applied but flagged with a warning line in the report.
 
+## Repository layout
+
+`scripts/` is the pipeline a run goes through; `tools/` holds standalone tools that a run never calls (each runs on its own from the repo root).
+
+| Folder | Contents |
+|---|---|
+| `scripts/` | The pipeline. `fetch_data.sh` and `load_*.py` build the prompt sets; `model_wrapper.py` (with `hf_model.py` and `api_model.py`) generates replies; `score_*.py` and `integrity_checks.py` score them; `safety_suite.py` is the command line, with `orchestrator.py`, `cases.py`, `capabilities.py`, `run_config.py` and `cli_input.py` planning and running the cases; `verdict.py`, `rescore.py`, `review.py`, `report.py` and `case_summary.py` produce and re-derive the verdict and its report. |
+| `tools/` | Standalone tools, one per line below. |
+| `config/` | Pass marks (`thresholds.json`), token caps and sampling protocols (`generation.json`), and the prices template. |
+| `templates/` | The report page template and its wording. |
+| `tests/` | The offline test suite. |
+| `progress/` | Fortnightly progress reports. |
+| `surveys/` | The hazard-ranking survey tally; not part of a run. |
+
+Tools in `tools/`:
+
+- `calibrate_caps.py`: samples prompts per case to measure real reply lengths and propose per-case token caps and a cost estimate for an API model.
+- `probe_thinking.py`: measures how Orion's API models return thinking, token use and default sampling on coding prompts.
+- `reply_lengths.py`: reply lengths per model and case, read from saved responses.
+- `check_th_truncation.py`: measures how much of a Thai reply the Thai classifier sees and whether the cut changes the verdict.
+- `sensitivity_integrity.py`: sensitivity grid for the integrity cases' settings, from hand-labelled review files.
+- `score_en_tail_sensitivity.py`: judges the part of long replies that the English classifier's clip cuts off.
+- `xstest_sanity_check.py`: compares the over-refusal matcher with XSTest's published completions and human labels.
+- `compare_refusal_scorer.py`: compares the over-refusal matcher with a WildGuard judge.
+- `score_wildguardtest.py`: scores WildGuardTest with the HarmBench classifier and compares it with the dataset's human labels.
+- `weight_diff.py`: compares two checkpoints tensor by tensor without loading either.
+- `run_chunked.py`: runs `model_wrapper.py` in fixed-size chunks so a crash loses only one chunk.
+- `make_smoke_subset.py`: writes a seeded random subset of a prompt set for small test runs.
+- `make_triggered_en_text.py`: inserts a backdoor trigger word into the English prompts, for adapter tests.
+
 ## Configuration
 
 - `config/thresholds.json`: per case the pass mark, minimum scored count, maximum excluded share, `direction`, the three served models' scores (`served`), a short `source`, and `needs_review` for `th_text`. A malformed entry is refused before a run.

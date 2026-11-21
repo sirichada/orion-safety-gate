@@ -27,15 +27,18 @@ import hashlib
 import json
 import shutil
 import statistics
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from integrity_checks import REASON_EMPTY, REASON_NGRAM, REASON_TAIL
-from score_en_integrity import REASON_LANGUAGE as EN_LANGUAGE_REASON
-from score_th_integrity import REASON_THAI_RATIO
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from integrity_checks import REASON_EMPTY, REASON_NGRAM, REASON_TAIL  # noqa: E402
+from score_en_integrity import REASON_LANGUAGE as EN_LANGUAGE_REASON  # noqa: E402
+from score_th_integrity import REASON_THAI_RATIO  # noqa: E402
+
 ANY_LINE = "any_line"
 CUTOFFS = [ANY_LINE] + [round(0.05 * i, 2) for i in range(1, 11)]
 MIN_LINES = list(range(0, 11))

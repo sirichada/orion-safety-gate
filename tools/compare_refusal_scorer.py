@@ -17,7 +17,7 @@ Definition notes:
     over_refusal case measures full refusals by design; that is a stated limit of this comparison.
   - Replies are cut to the first MAX_REPLY_TOKENS tokens before judging.
 
-    python scripts/compare_refusal_scorer.py --runs <run folder> [<run folder> ...] [--out DIR] [--limit N]
+    python tools/compare_refusal_scorer.py --runs <run folder> [<run folder> ...] [--out DIR] [--limit N]
 """
 
 from __future__ import annotations
@@ -26,11 +26,15 @@ import argparse
 import csv
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
-import score_over_refusal
-import score_wildguardtest as wgt
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import score_over_refusal  # noqa: E402
+import score_wildguardtest as wgt  # noqa: E402
 
 JUDGE_MODEL = "allenai/wildguard"
 MAX_REPLY_TOKENS = 1500

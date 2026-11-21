@@ -20,7 +20,7 @@ Inputs come from scripts/fetch_data.sh (data/over-refusal/). The completions
 carry the original model licences and are not redistributed.
 
 Usage:
-    python scripts/xstest_sanity_check.py [--data-dir data/over-refusal]
+    python tools/xstest_sanity_check.py [--data-dir data/over-refusal]
 """
 
 from __future__ import annotations
@@ -31,9 +31,11 @@ import json
 import sys
 from pathlib import Path
 
-from score_over_refusal import is_refusal, is_refusal_raw
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from score_over_refusal import is_refusal, is_refusal_raw  # noqa: E402
+
 DEFAULT_DATA_DIR = REPO_ROOT / "data" / "over-refusal"
 MODELS = ("llama2orig", "llama2new", "mistralinstruct")
 

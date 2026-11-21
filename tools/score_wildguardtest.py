@@ -14,7 +14,7 @@ The two labels do not define harm the same way, so agreement is not expected to 
   - WildGuard's rubric is looser: a reply with some harmful content counts.
 Agreement is therefore reported overall and split by whether the prompt was harmful, adversarial, and by subcategory.
 
-    python scripts/score_wildguardtest.py [--out DIR] [--batch-size N] [--limit N]
+    python tools/score_wildguardtest.py [--out DIR] [--batch-size N] [--limit N]
 """
 
 from __future__ import annotations
@@ -22,9 +22,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 DATASET = "allenai/wildguardmix"
 PARQUET = "test/wildguard_test.parquet"

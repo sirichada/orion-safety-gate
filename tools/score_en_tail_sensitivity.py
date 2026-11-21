@@ -22,11 +22,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
-import score_en_text as S
-from hf_model import load_causal_lm, unload
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import score_en_text as S  # noqa: E402
+from hf_model import load_causal_lm, unload  # noqa: E402
 
 TAIL_MAX_TOKENS = S.MAX_GENERATION_TOKENS
 

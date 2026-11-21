@@ -15,7 +15,7 @@ echo "Fetched HarmBench text behaviors -> data/en-text/harmbench_behaviors_text_
 echo "Fetched ThaiSafetyBench test split -> data/th-text/thaisafetybench_test.parquet"
 
 # XSTest (CC-BY-4.0, Rottger et al., NAACL 2024), pinned to a commit. Prompts feed the over-refusal case;
-# the completions and string-match labels feed xstest_sanity_check.py only and carry the original
+# the completions and string-match labels feed tools/xstest_sanity_check.py only and carry the original
 # model licences (Meta, Mistral, OpenAI), so they stay under the gitignored data/.
 XSTEST_SHA="d7bb5bd738c1fcbc36edd83d5e7d1b71a3e2d84d"
 XSTEST_RAW="https://raw.githubusercontent.com/paul-rottger/xstest/${XSTEST_SHA}"

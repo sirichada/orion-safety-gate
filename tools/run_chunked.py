@@ -116,7 +116,7 @@ def main():
         print(f"chunk {idx}: running model_wrapper.py on records {start}-{end} ({len(chunk_records)} prompts)")
         cmd = [
             sys.executable,
-            str(Path(__file__).parent / "model_wrapper.py"),
+            str(Path(__file__).resolve().parent.parent / "scripts" / "model_wrapper.py"),
             "--model", args.model,
             "--prompts", str(chunk_in),
             "--out", str(chunk_out),
