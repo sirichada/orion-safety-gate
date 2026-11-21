@@ -226,6 +226,9 @@ verdict*.json
 review*.json
 spend_ledger.json
 
+# Raw survey responses are not published
+surveys/hazard-ranking/responses/
+
 # Per-model API prices; copy config/prices.example.json to config/prices.json
 config/prices.json
 
