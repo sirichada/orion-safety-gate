@@ -15,9 +15,8 @@ Classifier invariants:
   the vocabulary has.
 - max_length=256 so the response survives truncation of a long prompt.
 
-Runs at full precision by default -- this is a ~184M-parameter model, not one
-of the two 13B-scale models that need 4-bit to fit in 12GB. Pass --4bit only
-if VRAM pressure from a concurrently-loaded model actually requires it.
+Runs at full precision by default (a ~184M-parameter model); --4bit loads it
+quantized.
 
 Usage:
     python3 score_th_text.py --responses responses.jsonl --out scored_th_text.jsonl
@@ -53,8 +52,7 @@ def score_records(records: list[dict], use_4bit: bool = False, batch_size: int =
     scorable_idx = [i for i, r in enumerate(records) if not is_failed(r)]
     inputs_text = [build_classifier_input(records[i]) for i in scorable_idx]
 
-    # Flag records the 256-token cap actually truncates, via the tokenizer's
-    # un-truncated length (not just len(text)).
+    # `truncated` is judged on the tokenizer's un-truncated token length, since the cap is in tokens.
     for idx, text in zip(scorable_idx, inputs_text):
         untruncated_len = len(tokenizer(text, add_special_tokens=True)["input_ids"])
         records[idx]["truncated"] = untruncated_len > MAX_LENGTH

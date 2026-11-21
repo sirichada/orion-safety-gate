@@ -2,10 +2,9 @@
 """
 Shared HF-model loading/unloading helpers. Every model this suite loads --
 the candidate model under test, HarmBench's classifier, and ThaiSafetyBench's
-classifier -- goes through one of the two loaders here, and all three run
-sequentially on a single 12GB GPU (one model resident in VRAM at a time), so
-the 4-bit quantization config and the unload step live in exactly one place
-rather than being copy-pasted per script.
+classifier -- goes through one of the two loaders here. They run one at a time
+on a single 12GB GPU, so the 4-bit quantization config and the unload step
+live in this module.
 """
 
 from __future__ import annotations
@@ -70,9 +69,8 @@ def load_causal_lm(
     tokenizer = AutoTokenizer.from_pretrained(model_path, **({"revision": revision} if revision else {}))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    # Left-pad for batched causal-LM generation -- right padding (the HF default)
-    # puts pad tokens before the real content ends, so slicing off the prompt by
-    # a single input_len below would decode garbage for every shorter sequence.
+    # Left padding keeps every prompt flush against its completion, so slicing
+    # the prompt off by the batch's input length decodes only generated tokens.
     tokenizer.padding_side = "left"
 
     model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
@@ -95,9 +93,7 @@ def load_sequence_classifier(model_path: str, use_4bit: bool = False):
     DebertaV2ForSequenceClassification checkpoint, not a bare PEFT adapter --
     load directly via AutoModelForSequenceClassification, no PeftModel wrap.
 
-    Defaults to full precision -- this is a ~184M-parameter model with no VRAM
-    pressure, unlike the 13B-scale candidate/classifier pair load_causal_lm
-    handles, so 4-bit buys nothing here while adding accuracy risk.
+    Defaults to full precision: a ~184M-parameter model needs no quantization.
     """
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -115,17 +111,13 @@ def load_sequence_classifier(model_path: str, use_4bit: bool = False):
 
 
 def unload(model):
-    """Frees a model's VRAM. Explicit step for the sequential load-use-unload
-    lifecycle this suite depends on (candidate model, then HarmBench-cls, then
-    ThaiSafetyClassifier never coexist in the same 12GB card) -- previously
-    relied on implicit process exit, which doesn't hold once a single process
-    loads more than one model in sequence.
+    """Frees a model's VRAM, so the candidate model, HarmBench's classifier and
+    ThaiSafetyClassifier never share the card.
 
-    Returns None -- callers MUST reassign their own reference (`model =
-    unload(model)`), since `del model` inside this function only unbinds this
-    function's local parameter, not the caller's variable. Without the
-    reassignment the caller's reference keeps the weights alive and
-    empty_cache() runs while VRAM is still occupied.
+    Returns None. Callers must reassign their own reference (`model =
+    unload(model)`): `del model` here only unbinds this function's local
+    parameter, so without the reassignment the caller's reference keeps the
+    weights alive and empty_cache() runs while VRAM is still occupied.
     """
     import gc
 
@@ -133,10 +125,7 @@ def unload(model):
 
     del model
     gc.collect()
-    # Guarded: unconditional empty_cache() raises on a CPU-only torch build
-    # with no CUDA support compiled in (as opposed to CUDA-available-but-
-    # uninitialized, where it's a harmless no-op) -- this keeps a CPU-only
-    # smoke test viable.
+    # empty_cache() raises on a torch build with no CUDA support compiled in.
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return None
