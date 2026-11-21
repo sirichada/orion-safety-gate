@@ -26,7 +26,7 @@ Each case ends as `pass`, `fail`, `insufficient_data` or `needs_review`. A case 
 
 Tool calling and coding are not tested and are not cases, so they never affect a gate. Every verdict lists them under `declared_scope.not_tested`, so the omission stays visible.
 
-> **Thresholds are still marked provisional.** `config/thresholds.json` carries `"provisional": true`. The pass marks, set on 2026-11-20 from the three models Orion already serves, are not yet confirmed as the final baseline, and the 100-reply minimum and the `th_integrity` mark are proposals. Each mark is the weakest served model plus or minus √2 times the 95% Wilson half-width (`en_integrity`'s 0.95 is fixed from hand labels), so a pass means the model is no worse than what Orion already serves. Verdicts from runs made before these marks carry the old marks as recorded.
+**Pass marks.** Each mark in `config/thresholds.json` is the weakest model Orion already serves, plus or minus √2 times the 95% Wilson half-width of its score (`en_integrity`'s 0.95 is fixed from hand labels), so a pass means the model is no worse than what Orion already serves. The 100-reply minimum and the maximum excluded share are proposals.
 
 ## Requirements
 
