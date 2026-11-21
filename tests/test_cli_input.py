@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -111,6 +112,10 @@ def test_model_id_suggestion_uses_the_last_segment(model, expected):
     assert suggest_model_id(model) == expected
 
 
+@pytest.mark.skipif(
+    not (sys.platform == "win32" and sys.stdin.isatty() and sys.stdout.isatty()),
+    reason="builds real questionary prompts, which need a Windows console (run pytest -s from a console)",
+)
 def test_real_questionary_accepts_every_prompt_shape(monkeypatch):
     questionary = pytest.importorskip("questionary")
     from cli_input import QuestionaryAsk
