@@ -225,7 +225,25 @@ def build_report(args, model, tokenizer, n_truncated_inputs) -> dict:
     )
 
 
-def main():
+def write_jsonl(path: str, records: list[dict], mode: str) -> None:
+    with open(path, mode, encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def write_json(path: str, payload: dict) -> None:
+    Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def config_error(out: str | None, kind: str, printed: str, message: str) -> None:
+    """Reports a settings problem the run cannot start with: printed to stderr, recorded beside --out, own exit code."""
+    print(printed, file=sys.stderr)
+    if out:
+        write_json(out + ".error.json", {"kind": kind, "message": message})
+    sys.exit(CONFIG_ERROR_EXIT_CODE)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="Base model path or HF repo id")
     parser.add_argument("--adapter", default=None, help="Optional PEFT adapter path/repo id")
@@ -296,7 +314,10 @@ def main():
         default="hf",
         help="hf = local transformers weights; api = OpenAI-compatible HTTP endpoint (--model is then the API model id)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def check_args(parser: argparse.ArgumentParser, args) -> None:
     if args.max_consecutive_failures < 1:
         parser.error("--max-consecutive-failures must be >= 1")
     if args.no_4bit:
@@ -325,21 +346,28 @@ def main():
         if not -2 <= args.presence_penalty <= 2:
             parser.error("--presence-penalty must be in [-2, 2]")
 
+    if args.backend == "api" and (
+        args.adapter
+        or args.precision != run_config.DEFAULTS["precision"]
+        or args.model_revision
+        or args.adapter_revision
+        or args.no_chat_template
+        or args.no_thinking
+        or args.chat_template is not None
+        or args.max_input_tokens != run_config.DEFAULTS["max_input_tokens"]
+    ):
+        parser.error(
+            "--adapter/--precision/--no-4bit/--model-revision/--adapter-revision/--no-chat-template/"
+            "--chat-template/--max-input-tokens/--no-thinking are hf-only"
+        )
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    check_args(parser, args)
+
     if args.backend == "api":
-        if (
-            args.adapter
-            or args.precision != run_config.DEFAULTS["precision"]
-            or args.model_revision
-            or args.adapter_revision
-            or args.no_chat_template
-            or args.no_thinking
-            or args.chat_template is not None
-            or args.max_input_tokens != run_config.DEFAULTS["max_input_tokens"]
-        ):
-            parser.error(
-                "--adapter/--precision/--no-4bit/--model-revision/--adapter-revision/--no-chat-template/"
-                "--chat-template/--max-input-tokens/--no-thinking are hf-only"
-            )
         from api_model import SpendGuard, make_api_generate
 
         model = tokenizer = None
@@ -370,11 +398,7 @@ def main():
                 adapter_revision=args.adapter_revision,
             )
         except (run_config.PrecisionError, run_config.RevisionError) as e:
-            print(f"Cannot load the model: {e}", file=sys.stderr)
-            if args.out:
-                error = {"kind": type(e).__name__, "message": str(e)}
-                Path(args.out + ".error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
-            sys.exit(CONFIG_ERROR_EXIT_CODE)
+            config_error(args.out, type(e).__name__, f"Cannot load the model: {e}", str(e))
         generate = make_generate(
             model,
             tokenizer,
@@ -384,16 +408,9 @@ def main():
             **({"top_k": args.top_k} if args.top_k is not None else {}),
         )
 
-    records = [json.loads(line) for line in Path(args.prompts).read_text(encoding="utf-8").splitlines() if line]
+    records = run_config.read_jsonl(Path(args.prompts))
     prompts = [r["model_input"] for r in records]
     api = args.backend == "api"
-
-    def config_error(kind: str, message: str) -> None:
-        print(f"Cannot start: {message}", file=sys.stderr)
-        if args.out:
-            error = {"kind": kind, "message": message}
-            Path(args.out + ".error.json").write_text(json.dumps(error, indent=2), encoding="utf-8")
-        sys.exit(CONFIG_ERROR_EXIT_CODE)
 
     n_truncated = (
         run_config.unavailable("server-side limit") if api else generate.count_truncated(prompts, args.chat_template)
@@ -407,13 +424,11 @@ def main():
         try:
             previous = run_config.read_stage_report(args.out)
         except ValueError as e:
-            config_error("ResumeMismatch", f"cannot resume: {e}")
+            config_error(args.out, "ResumeMismatch", f"Cannot start: cannot resume: {e}", f"cannot resume: {e}")
         mismatched = run_config.tested_mismatches(previous, report)
         if mismatched:
-            config_error(
-                "ResumeMismatch",
-                "cannot resume: settings differ from the run that wrote the file: " + ", ".join(mismatched),
-            )
+            message = "cannot resume: settings differ from the run that wrote the file: " + ", ".join(mismatched)
+            config_error(args.out, "ResumeMismatch", f"Cannot start: {message}", message)
         kept = []
         for line in Path(args.out).read_text(encoding="utf-8").splitlines():
             try:
@@ -421,12 +436,11 @@ def main():
             except json.JSONDecodeError:
                 break  # a torn final line from an interrupted write
         if len(kept) > len(records) or any(k.get("id") != r.get("id") for k, r in zip(kept, records)):
-            config_error("ResumeMismatch", "cannot resume: the responses on disk are not a prefix of these prompts")
+            message = "cannot resume: the responses on disk are not a prefix of these prompts"
+            config_error(args.out, "ResumeMismatch", f"Cannot start: {message}", message)
         start = len(kept)
         records[:start] = kept
-        with open(args.out, "w", encoding="utf-8") as f:
-            for record in kept:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        write_jsonl(args.out, kept, "w")
         if reasoning_path is not None and reasoning_path.exists():
             lines = [ln for ln in reasoning_path.read_text(encoding="utf-8").splitlines() if ln]
             reasoning_path.write_text(
@@ -446,9 +460,7 @@ def main():
 
     def write_out(records_to_write: list[dict]) -> None:
         if args.out:
-            with open(args.out, "w", encoding="utf-8") as f:
-                for record in records_to_write:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            write_jsonl(args.out, records_to_write, "w")
             print(f"Wrote {len(records_to_write)} responses -> {args.out}")
         else:
             for record in records_to_write[:5]:
@@ -534,9 +546,7 @@ def main():
                     if trace:
                         entry = {"index": k, "id": records[k].get("id"), "reasoning_content": trace}
                         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        with open(args.out, "a", encoding="utf-8") as f:
-            for k in range(flushed, len(responses)):
-                f.write(json.dumps(records[k], ensure_ascii=False) + "\n")
+        write_jsonl(args.out, records[flushed:len(responses)], "a")
         flushed = len(responses)
 
     # A failed generation is None, not "" -- an empty string is a real, scoreable
@@ -607,21 +617,20 @@ def main():
         # Preserve partial output before propagating the abort.
         fill_new(len(responses))
         write_out(records[: len(responses)])
-        if isinstance(e, StoppedNoAnswer) and args.out:
-            sidecar = {
-                "reason": str(e),
-                "n_prompts": len(prompts),
-                "n_attempted": len(responses),
-                "n_answered": sum(1 for k in range(len(responses)) if answered(k)),
-                "max_consecutive_failures": args.max_consecutive_failures,
-            }
-            Path(args.out + ".stopped.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
-        if isinstance(e, run_config.BudgetExceeded) and args.out:
-            sidecar = {"reason": str(e), "n_prompts": len(prompts), "n_completed": len(responses)}
-            Path(args.out + ".budget.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
-        if isinstance(e, run_config.GenerationAborted) and args.out:
-            sidecar = {"reason": str(e), "n_prompts": len(prompts), "n_completed": len(responses)}
-            Path(args.out + ".aborted.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+        if args.out:
+            completed = {"reason": str(e), "n_prompts": len(prompts), "n_completed": len(responses)}
+            if isinstance(e, StoppedNoAnswer):
+                write_json(args.out + ".stopped.json", {
+                    "reason": str(e),
+                    "n_prompts": len(prompts),
+                    "n_attempted": len(responses),
+                    "n_answered": sum(1 for k in range(len(responses)) if answered(k)),
+                    "max_consecutive_failures": args.max_consecutive_failures,
+                })
+            elif isinstance(e, run_config.BudgetExceeded):
+                write_json(args.out + ".budget.json", completed)
+            elif isinstance(e, run_config.GenerationAborted):
+                write_json(args.out + ".aborted.json", completed)
         raise
 
     fill_new(len(responses))

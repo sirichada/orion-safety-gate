@@ -567,7 +567,7 @@ def sample_records(path: Path, n: int, seed: int, case_id: str) -> list[dict]:
 
     The same (seed, case) always picks the same records, so runs at different settings are paired.
     """
-    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = run_config.read_jsonl(path)
     if n >= len(records):
         return records
     picked = sorted(random.Random(f"{seed}:{case_id}").sample(range(len(records)), n))
@@ -714,7 +714,7 @@ def run(args, inputs: Inputs, stamp: str, run_stage: RunStage = run_subprocess, 
     folder = run_dir.relative_to(REPO_ROOT) if run_dir.is_relative_to(REPO_ROOT) else run_dir
     append_index_row(stamp, inputs.model_id, f"cases: {cases}{scope}", outcome, f"{folder}/, {out}")
     print(format_verdict_summary(verdict))
-    print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
+    print(gates_line(verdict))
     print(f"Verdict -> {out}")
     write_report_for(out)
     return verdict
@@ -742,6 +742,10 @@ def write_report_for(verdict_path: Path) -> Path | None:
         return None
     print(f"Report -> {out}")
     return out
+
+
+def gates_line(verdict: dict) -> str:
+    return f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}"
 
 
 def format_verdict_summary(verdict: dict) -> str:
@@ -783,7 +787,7 @@ def rescore_command(args, run_stage: RunStage = run_subprocess) -> dict:
         raise SystemExit(f"Re-score failed, no verdict written: {e}")
     print(format_verdict_summary(verdict))
     print(rescore.format_changes(verdict))
-    print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']}")
+    print(gates_line(verdict))
     print(f"Re-scored verdict -> {out}")
     write_report_for(out)
     return verdict
@@ -808,7 +812,7 @@ def review_command(args) -> dict:
     except SuiteError as e:
         raise SystemExit(str(e))
     print(format_verdict_summary(verdict))
-    print(f"safety_gate={verdict['safety_gate']} smartness_gate={verdict['smartness_gate']} admitted={verdict['admitted']} state={verdict['verdict_state']}")
+    print(f"{gates_line(verdict)} state={verdict['verdict_state']}")
     print(f"Reviewed verdict -> {out}")
     write_report_for(out)
     return verdict
@@ -853,7 +857,7 @@ def format_dry_run(args, selection, generation: dict, calibration_file: str | No
             chosen = sample_records(runner.prompts, args.sample_per_case, args.sample_seed, case.case_id)
             prompts = [r.get("model_input", "") for r in chosen]
         else:
-            prompts = [json.loads(line).get("model_input", "") for line in runner.prompts.read_text(encoding="utf-8").splitlines() if line.strip()]
+            prompts = [r.get("model_input", "") for r in run_config.read_jsonl(runner.prompts)]
         worst = sum(api_model.worst_case_thb(args.model, api_model.estimate_input_tokens(p), cap) for p in prompts)
         expected = None
         sample = (calibration or {}).get("cases", {}).get(case.case_id)

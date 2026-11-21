@@ -35,11 +35,11 @@ from orchestrator import (
     RunStage,
     SuiteError,
     integrity_config_problems,
-    read_jsonl,
     responses_file,
     run_derived_case,
     run_subprocess,
 )
+from run_config import read_jsonl
 from verdict import build_case_result, build_verdict, result_options, threshold_entry_problems
 
 DEFAULT_THRESHOLDS = REPO_ROOT / "config" / "thresholds.json"

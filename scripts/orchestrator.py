@@ -42,6 +42,7 @@ import score_en_integrity
 import score_th_integrity
 import score_th_knowledge
 from cases import CaseSpec, Selection
+from run_config import read_jsonl
 from verdict import build_case_result, result_options, threshold_entry_problems
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -125,10 +126,6 @@ def run_subprocess(cmd: list[str], log_path: Path) -> int:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def count_lines(path: Path) -> int:
@@ -274,22 +271,18 @@ def run_case(
 
     gen_cmd = [sys.executable, "model_wrapper.py", "--prompts", str(prompts), "--out", str(responses), *wrapper_args]
     code = run_stage(gen_cmd, LOGS / f"model_wrapper_{case.case_id}_{stamp}.log")
-    budget_sidecar = Path(str(responses) + ".budget.json")
-    if code == BUDGET_EXIT_CODE and budget_sidecar.exists():
-        stop = json.loads(budget_sidecar.read_text(encoding="utf-8"))
-        budget_sidecar.unlink()
-        raise SuiteError(
-            f"{case.case_id}: spend limit reached after {stop['n_completed']}/{stop['n_prompts']} prompts "
-            f"({stop['reason']}); the responses so far are kept in {responses.parent}, continue with --resume"
-        )
-    aborted_sidecar = Path(str(responses) + ".aborted.json")
-    if code == ABORTED_EXIT_CODE and aborted_sidecar.exists():
-        stop = json.loads(aborted_sidecar.read_text(encoding="utf-8"))
-        aborted_sidecar.unlink()
-        raise SuiteError(
-            f"{case.case_id}: generation aborted after {stop['n_completed']}/{stop['n_prompts']} prompts "
-            f"({stop['reason']}); the responses so far are kept in {responses.parent}, continue with --resume"
-        )
+    for exit_code, suffix, what in (
+        (BUDGET_EXIT_CODE, ".budget.json", "spend limit reached"),
+        (ABORTED_EXIT_CODE, ".aborted.json", "generation aborted"),
+    ):
+        stop_sidecar = Path(str(responses) + suffix)
+        if code == exit_code and stop_sidecar.exists():
+            stop = json.loads(stop_sidecar.read_text(encoding="utf-8"))
+            stop_sidecar.unlink()
+            raise SuiteError(
+                f"{case.case_id}: {what} after {stop['n_completed']}/{stop['n_prompts']} prompts "
+                f"({stop['reason']}); the responses so far are kept in {responses.parent}, continue with --resume"
+            )
     if code == STOPPED_NO_ANSWER_EXIT_CODE and sidecar.exists():
         n_truncated_inputs = read_run_config(responses, case.case_id)["n_truncated_inputs"]
         stop = json.loads(sidecar.read_text(encoding="utf-8"))

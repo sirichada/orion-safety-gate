@@ -361,6 +361,10 @@ def git_state(repo_root, run: Callable = subprocess.run) -> dict:
     return {"commit": commit, "dirty": bool(changed), "dirty_paths": [line[3:] for line in changed[:20]]}
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def file_sha256(path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:

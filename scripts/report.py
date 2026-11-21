@@ -27,6 +27,7 @@ from pathlib import Path
 from case_summary import category_summary, sample_generations
 from cases import REGISTRY
 from orchestrator import SuiteError
+from run_config import read_jsonl
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "report.html.tmpl"
 GATE_NAMES = ("safety", "smartness")
@@ -205,7 +206,7 @@ class Report:
             path = self.run_dir / f"scored_{case['case_id']}.jsonl"
         if not path.is_file():
             return []
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return read_jsonl(path)
 
     # -- page parts ----------------------------------------------------------------------------------------------
     def case_name(self, case_id: str) -> str:
