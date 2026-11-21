@@ -73,8 +73,7 @@ done
 echo "Fetched ThaiExam (revision ${THAI_EXAM_REV}) -> ${THAI_EXAM_DIR}/"
 
 # fastText language-ID model for the en_integrity scorer (lid.176.bin, CC-BY-SA 3.0 per the fastText language-identification page).
-# While LID_SHA256 is TODO the file is fetched once and its hash printed. Only this step then exits non-zero,
-# after everything above has been fetched.
+# The file is pinned to LID_SHA256; a download that does not match stops the script with an error.
 LID_URL="https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
 LID_SHA256="7e69ec5451bc261cc7844e49e4792a85d7f09c06789ec800fc4a44aec362764e"
 LID_FILE="data/lid/lid.176.bin"
@@ -89,16 +88,12 @@ lid_hash() {
 
 echo "All other data fetched; fetching the language-ID model."
 mkdir -p data/lid
-if [ -f "${LID_FILE}" ] && { [ "${LID_SHA256}" = "TODO" ] || [ "$(lid_hash)" = "${LID_SHA256}" ]; }; then
+if [ -f "${LID_FILE}" ] && [ "$(lid_hash)" = "${LID_SHA256}" ]; then
   echo "Reusing ${LID_FILE}"
 else
   curl -sfL -o "${LID_FILE}" "${LID_URL}"
 fi
 LID_ACTUAL="$(lid_hash)"
-if [ "${LID_SHA256}" = "TODO" ]; then
-  echo "WARNING: ${LID_FILE} is not pinned. Its sha256 is ${LID_ACTUAL}; set LID_SHA256 in scripts/fetch_data.sh to this value." >&2
-  exit 1
-fi
 if [ "${LID_ACTUAL}" != "${LID_SHA256}" ]; then
   echo "ERROR: ${LID_FILE} sha256 mismatch: expected ${LID_SHA256}, got ${LID_ACTUAL}" >&2
   exit 1
