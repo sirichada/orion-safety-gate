@@ -220,6 +220,12 @@ __marimo__/
 # Repo-specific
 .DS_Store
 
+# Finished run outputs hold model replies and spend figures
+report*.html
+verdict*.json
+review*.json
+spend_ledger.json
+
 # Per-model API prices; copy config/prices.example.json to config/prices.json
 config/prices.json
 
