@@ -25,10 +25,10 @@ sample: its sample_ids, or with --only-cut-off exactly those whose finish_reason
 Sampling defaults to the model's protocol in config/generation.json (protocols[model-id], the same
 table the suite reads); a model with no entry is refused. --temperature/--top-p/--top-k/
 --presence-penalty override it, and a run that differs from the protocol is recorded with
-matches_protocol false. top_k goes out inside the request's extra_body (the gateway rejects it as a
-top-level field with HTTP 500); presence_penalty goes out as a top-level field. --repeats sends each
+matches_protocol false. top_k goes out inside the request's extra_body (the API does not accept it as a
+top-level field); presence_penalty goes out as a top-level field. --repeats sends each
 prompt that many times (ids get a __r<k> suffix). All of it is recorded in calibration.json.
-If any request fails after its retries (a 4xx rejection, or the 500 a gateway returns for an unsupported field), the run stops at once and prints the error
+If any request fails after its retries (a 4xx rejection, or a server error for an unsupported field), the run stops at once and prints the error
 body; nothing falls back to other settings.
 """
 

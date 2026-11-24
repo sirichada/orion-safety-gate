@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--top-k",
         type=int,
         default=None,
-        help="top_k. api backend: sent inside the request's extra_body object (the gateway rejects it as a top-level field). "
+        help="top_k. api backend: sent inside the request's extra_body object (the API does not accept it as a top-level field). "
         "hf backend: passed to generate() when sampling (temperature > 0)",
     )
     parser.add_argument(

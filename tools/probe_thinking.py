@@ -20,7 +20,7 @@ Usage:
     python tools/probe_thinking.py prepare --test6 data/livecodebench/test6.jsonl
     python tools/probe_thinking.py run --dry-run
     python tools/probe_thinking.py run
-    python tools/probe_thinking.py reconcile --run-dir runs/results/thinking_probe/<ts> --dashboard-thb 1.23
+    python tools/probe_thinking.py reconcile --run-dir runs/results/thinking_probe/<ts> --dashboard-thb <amount>
 """
 
 from __future__ import annotations
@@ -1165,7 +1165,7 @@ def model_info_urls() -> tuple[str, str]:
 
 
 def fetch_model_info(get: Callable[[str], tuple[int | None, str]]) -> dict:
-    """Read-only lookups of the gateway's model info; whatever comes back is recorded, truncated."""
+    """Read-only lookups of the API's model info; whatever comes back is recorded, truncated."""
     found = {}
     for url in model_info_urls():
         status, body = get(url)

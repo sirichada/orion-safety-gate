@@ -75,7 +75,7 @@ def write_scored(directory: Path, scores: dict, replies: dict | None = None) -> 
     return paths
 
 
-def make_verdict(tmp_path: Path, scores: dict | None = None, *, only=None, run_args=None, excluded: dict | None = None, replies=None, deviations=None, with_samples=True) -> dict:
+def make_verdict(tmp_path: Path, scores: dict | None = None, *, only=None, run_args=None, excluded: dict | None = None, empty: dict | None = None, replies=None, deviations=None, with_samples=True) -> dict:
     scores = {**PASSING, **(scores or {})}
     directory = Path(tmp_path)
     directory.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ def make_verdict(tmp_path: Path, scores: dict | None = None, *, only=None, run_a
             scoring_method="fixture",
             notes="",
             n_excluded=None if derived else n_excluded,
-            n_no_answer=None if derived else n_excluded,
+            n_no_answer=None if derived else (empty or {}).get(case.case_id, 0),
             max_excluded_fraction=entry.get("max_excluded_fraction"),
             max_new_tokens=None if derived else 4096,
             cost_thb=None if derived else 1.25,

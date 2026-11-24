@@ -1,6 +1,8 @@
 """
-Deterministic seed derivation from a declared model identifier, so re-runs
-against the same model sample the same prompts.
+Deterministic seed derivation from a string. case_summary.py seeds it with
+the model id and case id to pick the sample replies shown in the report, so
+a re-score shows the same replies. It plays no part in which prompts a run
+sends.
 """
 
 import hashlib

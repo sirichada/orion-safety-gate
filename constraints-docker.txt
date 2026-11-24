@@ -1,0 +1,16 @@
+# Versions the Docker image installs. Taken from the environment the suite was validated in.
+torch==2.11.0
+transformers==5.17.0
+accelerate==1.15.0
+bitsandbytes==0.50.2
+peft==0.21.0
+numpy==2.5.3
+sentencepiece==0.2.2
+pyarrow==25.0.1
+protobuf==7.36.2
+httpx==0.28.1
+huggingface_hub==1.32.0
+questionary==2.1.1
+pytest==9.1.1
+fasttext==0.9.3
+pythainlp==5.4.0

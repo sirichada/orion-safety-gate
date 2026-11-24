@@ -6,8 +6,8 @@ against an OpenAI-compatible /chat/completions endpoint.
 
 Every prompt is sent as exactly one user message; no system message is ever added. The server
 applies its own chat template and input-length limit, so chat_template is rejected rather than
-ignored. Every request is streamed (a reply that thinks can take many minutes, far past the
-gateway's non-streaming limit) and the stream is folded into one reply. One request per
+ignored. Every request is streamed, because a reply that thinks can take many minutes, and the
+stream is folded into one reply. One request per
 prompt, at most `concurrency` in flight at once (never more than CONCURRENCY_CEILING), and
 results come back in input order. After a call, generate.meta holds one dict per returned
 reply (finish_reason, attempts, usage, latency_s, cost_thb, reasoning_content), aligned with

@@ -48,7 +48,7 @@ PER_CASE_FIELDS = ("max_new_tokens", "max_input_tokens")
 
 PROTOCOL = {"temperature": 0.0, "top_p": 1.0, "do_sample": False, "caller_system_prompt": "none"}
 
-# Where the gateway accepts top_k: a top-level field is rejected with HTTP 500.
+# top_k is sent inside extra_body; the API does not accept it as a top-level field.
 TOP_K_LOCATION = "extra_body"
 HF_TOP_K_LOCATION = "generate_kwargs"
 

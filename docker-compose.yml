@@ -1,0 +1,29 @@
+# Runs the safety suite in a container on one local NVIDIA GPU.
+#
+#   export HF_CACHE_DIR=<your Hugging Face cache folder, the one that holds hub/>
+#   docker compose build
+#   docker compose run --rm suite --help
+#   docker compose run --rm --entrypoint bash suite scripts/fetch_data.sh     # once, fills ./data
+#   docker compose run --rm suite run --backend hf --model Qwen/Qwen3-0.6B --model-id Qwen3-0.6B ...
+#
+# Nothing in this file or the image holds a key. ORION_API_KEY and ORION_BASE_URL are read from ./.env when
+# the file exists and are only needed for API runs.
+services:
+  suite:
+    build: .
+    image: orion-safety-gate:local
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${HF_CACHE_DIR:?set HF_CACHE_DIR to your Hugging Face cache folder}:/hf
+      - ./data:/app/data
+      - ./runs:/app/runs
+      - ./config:/app/config:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

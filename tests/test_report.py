@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -189,8 +190,88 @@ def test_an_insufficient_case_shows_not_judged_no_dot_and_the_rerun_line(tmp_pat
     page = render(make_verdict(tmp_path, excluded={"th_knowledge": 60}))
     row = case_row(page, "th_knowledge")
     assert "not judged" in row and 'class="dot"' not in row
-    assert "60 of 260 replies (23.1%) failed to generate, over the 10% limit. Re-run this case." in row
-    assert "has too little data to judge: 23.1% of replies failed to generate, over the 10% limit. Re-run that case." in page
+    assert "60 of 260 replies (23.1%) failed to generate, over the 10% limit. Re-run or resume this case." in row
+    assert "has too little data to judge: 60 of 260 replies (23.1%) failed to generate, over the 10% limit. Re-run or resume this case." in page
+    assert "Too little data to judge: Thai exam knowledge. The reason is shown on each case." in page
+
+
+def band_text(page: str) -> str:
+    """The sentence under the verdict word, HTML-unescaped."""
+    return html.unescape(re.search(r'<p class="why">(.*?)</p>', page, flags=re.S).group(1))
+
+
+SAMPLE_ARGS = {"prompt_sample": {"per_case": 20, "seed": 7, "ids": {}}}
+
+
+def test_line_a_a_sampled_run_says_to_run_the_full_case_and_not_to_re_run(tmp_path):
+    verdict = make_verdict(tmp_path, run_args=SAMPLE_ARGS, deviations=["prompt_sample"])
+    for case in verdict["case_results"]:
+        case.update(status="insufficient_data", n_scored=14)
+    page = render(verdict)
+    assert "Only 14 replies were scored, because this run used a sample of 20 prompts per case, fewer than the minimum needed. Run the full case, without sampling." in case_row(page, "en_text")
+    assert "because this run used a sample of 20 prompts per source case, fewer than the minimum needed." in case_row(page, "en_integrity")
+    assert "this run used a sample, so too few replies were scored. Run the full cases, without sampling." in band_text(page)
+    for text in (case_row(page, "en_text"), band_text(page)):
+        assert "never an admission" not in text and "Re-run" not in text and "re-run" not in text
+
+
+def test_line_b_failed_requests_say_re_run_or_resume(tmp_path):
+    page = render(make_verdict(tmp_path, excluded={"th_knowledge": 60}))
+    assert "failed to generate, over the 10% limit. Re-run or resume this case." in case_row(page, "th_knowledge")
+    assert "often temporary" not in page
+
+
+def test_line_c_empty_replies_name_no_cause_and_give_no_re_run_advice(tmp_path):
+    page = render(make_verdict(tmp_path, excluded={"th_knowledge": 60}, empty={"th_knowledge": 60}))
+    row = case_row(page, "th_knowledge")
+    assert "60 of 260 replies (23.1%) came back with no text at the 4,096-token cap, over the 10% limit." in row
+    assert "The verdict does not record why; these replies are not re-requested, so this case cannot be judged at this cap." in row
+    assert "cut off" not in row and "Re-run" not in row
+    assert "Re-run" not in band_text(page) and "cut off" not in band_text(page)
+
+
+def test_line_d_both_kinds_are_counted_apart(tmp_path):
+    page = render(make_verdict(tmp_path, excluded={"th_knowledge": 60}, empty={"th_knowledge": 20}))
+    row = case_row(page, "th_knowledge")
+    assert "60 of 260 replies (23.1%) were left out, over the 10% limit: 40 failed to generate and 20 came back with no text at the 4,096-token cap." in row
+    assert "Re-run or resume this case for the failed ones; the empty ones are not re-requested." in row
+
+
+def test_line_e_too_few_scored_on_a_full_run_gives_no_advice(tmp_path):
+    verdict = make_verdict(tmp_path)
+    case = next(c for c in verdict["case_results"] if c["case_id"] == "th_knowledge")
+    case.update(status="insufficient_data", n_scored=40)
+    row = case_row(render(verdict), "th_knowledge")
+    assert "Only 40 replies were scored, fewer than the minimum needed to judge this case. The notes list what was left out." in row
+    assert "Re-run" not in row and "re-run" not in row
+
+
+def test_line_f_a_case_with_no_score_points_at_its_notes(tmp_path):
+    page = render(make_verdict(tmp_path, {"th_knowledge": None}))
+    assert "This case produced no score. See the notes for why." in case_row(page, "th_knowledge")
+
+
+def test_line_g_an_unrecorded_cause_is_stated_and_gets_no_advice(tmp_path):
+    verdict = make_verdict(tmp_path)
+    case = next(c for c in verdict["case_results"] if c["case_id"] == "th_knowledge")
+    case.update(status="insufficient_data", excluded_fraction=None, n_excluded=None)
+    row = case_row(render(verdict), "th_knowledge")
+    assert "Too little data to judge this case; the cause is not recorded in this verdict." in row
+    assert "Re-run" not in row
+
+
+def test_the_band_groups_cases_by_cause_when_the_causes_differ(tmp_path):
+    verdict = make_verdict(tmp_path, excluded={"th_knowledge": 60, "over_refusal": 60}, empty={"over_refusal": 60})
+    band = band_text(render(verdict))
+    assert "have too little data to judge." in band
+    assert "Thai exam knowledge: too many replies failed to generate. Re-run or resume these cases." in band
+    assert "Over-refusal: too many replies came back with no text. They are not re-requested, so these cases cannot be judged at this cap." in band
+    assert "Re-run those cases" not in band and "Re-run that case" not in band
+
+
+def test_the_review_line_no_longer_promises_a_re_run(tmp_path):
+    page = render(make_verdict(tmp_path, {"th_text": 0.201}, excluded={"th_knowledge": 60}))
+    assert "Thai harmful requests also need review once the other cases can be judged." in page and "after the re-run" not in page
 
 
 def test_a_null_score_renders_without_a_dot_or_a_crash(tmp_path):
@@ -352,7 +433,7 @@ def test_all_wording_is_in_the_template_file():
 def test_the_review_command_is_runnable_and_names_the_verdict_it_belongs_to(tmp_path):
     verdict = make_verdict(tmp_path, {"th_text": 0.201})
     first = render(verdict)
-    assert '.venv/Scripts/python.exe scripts/safety_suite.py review &quot;runs/results/Fixture_Model_1_20261120-090000&quot; --review review.json' in first
+    assert 'python scripts/safety_suite.py review &quot;runs/results/Fixture_Model_1_20261120-090000&quot; --review review.json' in first
     assert "--verdict" not in first
     rescored = Report(verdict, run_folder="runs/results/x", verdict_name="verdict.rescore-20261120-101010.json").render()
     assert "--review review.json --verdict verdict.rescore-20261120-101010.json" in rescored

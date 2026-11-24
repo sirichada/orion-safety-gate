@@ -1,0 +1,18 @@
+# Keeps the build context to the code. Secrets, weights, data and run output never enter the image.
+.git
+.gitignore
+.env
+.venv
+.pytest_cache
+**/__pycache__
+data
+runs
+reports
+ssh
+config/prices.json
+responses_*.jsonl
+scored_*.jsonl
+progress
+surveys
+tests
+tools

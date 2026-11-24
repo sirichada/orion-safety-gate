@@ -8,7 +8,7 @@ Usage:
         --capabilities capabilities.json --thresholds ../config/thresholds.json [--backend api]
     python safety_suite.py run --model <...> --model-id <name> --modalities text --languages en th
     python safety_suite.py run ... --only over_refusal    # partial run; never an admission
-    python safety_suite.py run --backend api --max-thb 40 ...    # api runs need a spend limit
+    python safety_suite.py run --backend api --max-thb <limit> ...    # api runs need a spend limit
     python safety_suite.py run --backend api --dry-run ...       # per-case worst-case/expected THB; no key, no network
     python safety_suite.py run ... --resume runs/results/<run folder>    # continue an interrupted run
     python safety_suite.py rescore runs/results/<run folder>             # re-derive its verdict offline

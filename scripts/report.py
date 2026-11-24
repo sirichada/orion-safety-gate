@@ -261,11 +261,8 @@ class Report:
             if pending:
                 why = Raw(f"{why} {r.w('band.why.not_admitted_review')}")
         elif state == "not_decided":
-            if len(insufficient) == 1:
-                case = insufficient[0]
-                why = r.w("band.why.not_decided_data", case=self.case_name(case["case_id"]), reason=self.insufficient_reason(case, short=True))
-            elif insufficient:
-                why = r.w("band.why.not_decided_data_many", cases=self.names([c["case_id"] for c in insufficient]))
+            if insufficient:
+                why = self.insufficient_band(insufficient)
             else:
                 why = r.w("band.why.not_decided_other", reasons=self.undecided_reasons())
             if pending:
@@ -290,17 +287,64 @@ class Report:
             reasons.append(r.wtext("band.reason.deviations", deviations="; ".join(v["protocol_deviations"])))
         return ("; ".join(reasons) or r.wtext("band.reason.generic")).rstrip(".") + "."
 
-    def insufficient_reason(self, case: dict, *, short: bool = False) -> str:
+    def exclusion_cause(self, case: dict) -> tuple[str, str] | None:
+        """(kind, text) when replies left out of the case exceed its limit. Failed requests and empty replies are
+        told apart by n_no_answer; the verdict does not record why a reply was empty, so the text does not say."""
         r = self.r
         fraction, limit = case.get("excluded_fraction"), case.get("max_excluded_fraction")
-        if fraction is not None and limit is not None and fraction > limit:
-            n, k = case.get("n_prompts"), case.get("n_excluded")
-            if short:
-                return f"{percent(fraction)} of replies failed to generate, over the {percent(limit)} limit."
-            return r.wtext("data.excluded", k=f"{k:,}", n=f"{n:,}", pct=percent(fraction), limit=percent(limit))
-        if case.get("score") is not None:
-            return r.wtext("data.too_few", n=case.get("n_scored", 0), min="the minimum")
-        return r.wtext("data.no_score")
+        if fraction is None or limit is None or fraction <= limit:
+            return None
+        k = case.get("n_excluded") or 0
+        empty = min(case.get("n_no_answer") or 0, k)
+        cap = case.get("max_new_tokens")
+        values = {
+            "k": f"{k:,}",
+            "n": f"{case.get('n_prompts', 0):,}",
+            "pct": percent(fraction),
+            "limit": percent(limit),
+            "failed": f"{k - empty:,}",
+            "empty": f"{empty:,}",
+            "cap": f"the {cap:,}-token cap" if cap else "the token cap",
+        }
+        kind = "both" if 0 < empty < k else "empty" if empty else "failed"
+        return kind, r.wtext(f"data.excluded_{kind}", **values)
+
+    def insufficient_cause(self, case: dict) -> tuple[str, str]:
+        """(kind, text) for a case with too little data: the first recorded cause that applies, with its advice.
+        A sample comes first; a cause the verdict does not record gets no advice."""
+        r = self.r
+        sample = (self.v.get("run_args") or {}).get("prompt_sample")
+        excluded = self.exclusion_cause(case)
+        if sample:
+            derived = any(c.case_id == case["case_id"] and c.derived for c in REGISTRY)
+            text = r.wtext("data.sampled", n=case.get("n_scored") or 0, per_case=sample.get("per_case", sample.get("n", "?")), unit="source case" if derived else "case")
+            return "sampled", f"{text} {excluded[1]}" if excluded else text
+        if excluded:
+            return excluded
+        if case.get("score") is None:
+            return "no_score", r.wtext("data.no_score")
+        if case.get("excluded_fraction") is not None:
+            return "too_few", r.wtext("data.too_few", n=case.get("n_scored", 0))
+        return "unknown", r.wtext("data.unknown")
+
+    def insufficient_reason(self, case: dict) -> str:
+        return self.insufficient_cause(case)[1]
+
+    def insufficient_band(self, cases: list[dict]) -> Raw:
+        """The band sentence for cases with too little data: one line for one case, otherwise grouped by cause."""
+        r = self.r
+        causes = [(c["case_id"], *self.insufficient_cause(c)) for c in cases]
+        if len(causes) == 1:
+            case_id, _, text = causes[0]
+            return r.w("band.why.not_decided_data", case=self.case_name(case_id), reason=text)
+        groups: dict[str, list[str]] = {}
+        for case_id, kind, _ in causes:
+            groups.setdefault(kind, []).append(case_id)
+        names = self.names([case_id for case_id, _, _ in causes])
+        if len(groups) == 1:
+            return r.w("band.why.not_decided_data_many", cases=names, reason=r.wtext(f"band.group.{next(iter(groups))}"))
+        items = " ".join(r.wtext("band.group_item", names=self.names(ids), reason=r.wtext(f"band.group.{kind}")) for kind, ids in groups.items())
+        return r.w("band.why.not_decided_data_groups", cases=names, groups=items)
 
     def gates(self) -> Raw:
         v, r = self.v, self.r
@@ -542,7 +586,7 @@ class Report:
             indent=1,
             ensure_ascii=False,
         )
-        command = f'.venv/Scripts/python.exe scripts/safety_suite.py review "{self.command_folder}" --review review.json'
+        command = f'python scripts/safety_suite.py review "{self.command_folder}" --review review.json'
         if self.verdict_name != "verdict.json":
             command += f" --verdict {self.verdict_name}"
         if flagged:
