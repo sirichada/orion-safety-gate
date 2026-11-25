@@ -47,6 +47,12 @@ A model is **admitted only when both gates pass.** Scope is English and Thai, te
    bash scripts/fetch_data.sh         # downloads the benchmark data and checks each file's hash
    ```
 
+   Then build the prompt sets from the downloaded data. Run this again after a loader changes.
+
+   ```bash
+   for f in scripts/load_*.py; do python "$f"; done
+   ```
+
    Then put your key and the API address in a `.env` file in the repo root:
 
    ```bash
@@ -126,7 +132,7 @@ Tool calling and coding are not tested and are not cases, so they never affect a
 Each case goes through the same stages. Every stage is its own script, and stages pass their results on as JSONL files, not in memory.
 
 1. **Fetch** (`scripts/fetch_data.sh`): downloads the benchmark data into `data/`.
-2. **Load** (`scripts/load_*.py`): converts each benchmark into the common prompt-set format (`id`, `native_id`, `prompt`, `language`, `source_benchmark`, `native_category`, `functional_category`, `context`, `model_input`) in `data/prompt-sets/`.
+2. **Load** (`scripts/load_*.py`): converts each benchmark into the common prompt-set format (`id`, `native_id`, `prompt`, `language`, `source_benchmark`, `native_category`, `functional_category`, `context`, `model_input`) in `data/prompt-sets/`. [Quick start](#quick-start) has the command.
 3. **Generate** (`scripts/model_wrapper.py`): sends each `model_input` to the candidate model, locally (`--backend hf`) or through the API (`--backend api`), and writes `responses_<case>.jsonl`.
 4. **Score** (`scripts/score_*.py`): scores the replies with the case's own scorer and writes `scored_<case>.jsonl`. `en_integrity` and `th_integrity` re-check replies already generated for `en_text` and `th_text`, so they need no generation of their own.
 5. **Verdict** (`scripts/verdict.py`): compares each case's score with its pass mark in `config/thresholds.json`, combines the cases into the two gates and writes `verdict.json`.
@@ -147,6 +153,7 @@ The commands are in [Quick start](#quick-start), step 1. Notes:
 
 - **`fasttext` has no Windows wheel.** On Windows, set `CL="/std:c++17 /Dssize_t=ptrdiff_t"` before `pip install` to build it from source.
 - **The commands assume the virtual environment is active.** If `python` points elsewhere, call `.venv/bin/python` (Windows: `.venv\Scripts\python.exe`).
+- **The load step in PowerShell** is `Get-ChildItem scripts\load_*.py | ForEach-Object { python $_.FullName }`. `fetch_data.sh` needs bash (Git Bash on Windows).
 - **The downloaded data is pinned.** `fetch_data.sh` fetches fixed revisions of XSTest, ThaiExam and the fastText model, checks their hashes, and stops if a download does not match.
 - **The key is only sent in the `Authorization` header.** `ORION_API_KEY` and `ORION_BASE_URL` can also be exported in your shell instead of `.env`. Run reports record the address as `(set by ORION_BASE_URL)`, and `.env` is git-ignored. Never commit it.
 
@@ -224,7 +231,7 @@ The image holds the code and its Python dependencies, at the versions in `constr
 ```bash
 export HF_CACHE_DIR=<your HF_HOME folder, the one that holds hub/>    # PowerShell: $env:HF_CACHE_DIR = "..."
 docker compose build
-docker compose run --rm --entrypoint bash suite scripts/fetch_data.sh   # once, fills ./data
+docker compose run --rm --entrypoint bash suite -c 'bash scripts/fetch_data.sh && for f in scripts/load_*.py; do python $f; done'   # once, fills ./data
 docker compose run --rm -T suite run --backend hf --model Qwen/Qwen3-0.6B --model-id Qwen3-0.6B \
   --languages en th --modalities text --no-thinking --batch-size 4 \
   --sample-per-case 20 --sample-seed 1 --yes --no-input
