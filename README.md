@@ -60,7 +60,7 @@ A model is **admitted only when both gates pass.** Scope is English and Thai, te
    ORION_BASE_URL=<the API address, ending in /v1>
    ```
 
-2. **Run a dry run first.** It shows the plan and the worst-case spend without sending any requests. [Model names](#model-names) lists what to pass as `--model` and `--model-id`, and `<limit>` is the most you are willing to spend on the run, in THB.
+2. **Run a dry run first.** It shows the plan and the worst-case spend without sending any requests. [Model names](#model-names) lists what to pass as `--model` and `--model-id`, and `<limit>` is the most you are willing to spend on the run, in THB. In PowerShell, put each command on one line, or end each line with a backtick instead of `\`.
 
    ```bash
    python scripts/safety_suite.py run --backend api --model "<model>" \
