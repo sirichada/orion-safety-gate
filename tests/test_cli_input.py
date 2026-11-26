@@ -21,6 +21,7 @@ class FakeAsk:
         self.text_answer = text_answer
         self.confirm_answer = confirm_answer
         self.asked = []
+        self.text_default = None
 
     def confirm(self, message, default=True):
         self.asked.append(message)
@@ -35,6 +36,7 @@ class FakeAsk:
 
     def text(self, message, default=""):
         self.asked.append(message)
+        self.text_default = default
         return self.text_answer
 
 
@@ -83,6 +85,16 @@ def test_interactive_fills_everything_and_keeps_text():
     inputs = resolve_inputs(args(), True, lambda: ask)
     assert inputs.capabilities.declared_modalities == frozenset({"text", "image"})
     assert inputs.model_id == "my-model"
+
+
+@pytest.mark.parametrize(
+    "backend_flags, expected",
+    [(["--backend", "api", "--dry-run"], "Qwen 3.8-Flash-Next"), (["--backend", "hf"], "qwen-3.8-flash-next")],
+)
+def test_model_id_prompt_default_depends_on_the_backend(backend_flags, expected):
+    ask = FakeAsk(checkbox_answers=[["en"]])
+    resolve_inputs(args("--model", "Qwen 3.8-Flash-Next", *backend_flags), True, lambda: ask)
+    assert ask.text_default == expected
 
 
 @pytest.mark.parametrize("position", ["images", "languages", "model_id"])

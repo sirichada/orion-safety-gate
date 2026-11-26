@@ -140,7 +140,11 @@ def resolve_inputs(args, interactive: bool, ask_factory=QuestionaryAsk) -> Input
             )
         capabilities = parse_capabilities({"declared_modalities": list(modalities), "declared_languages": list(languages)})
 
-    model_id = args.model_id or prompt(ask.text, "Model id (a stable name for this record):", default=suggest_model_id(args.model))
+    model_id = args.model_id
+    if not model_id:
+        # An API run looks its model id up in the generation config by exact match.
+        suggested = args.model if args.backend == "api" else suggest_model_id(args.model)
+        model_id = prompt(ask.text, "Model id (a stable name for this record):", default=suggested)
     if not model_id.strip():
         raise SuiteError("model id must not be empty")
 
